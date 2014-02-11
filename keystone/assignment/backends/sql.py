@@ -674,11 +674,13 @@ class Domain(sql.ModelBase, sql.DictBase):
 
 class Project(sql.ModelBase, sql.DictBase):
     __tablename__ = 'project'
-    attributes = ['id', 'name', 'domain_id', 'parent_project_id', 'description', 'enabled']
+    attributes = ['id', 'name', 'domain_id', 'parent_project_id',
+                  'description', 'enabled']
     id = sql.Column(sql.String(64), primary_key=True)
     name = sql.Column(sql.String(64), nullable=False)
     domain_id = sql.Column(sql.String(64), sql.ForeignKey('domain.id'),
                            nullable=False)
+    parent_project_id = sql.Column(sql.String(64), sql.ForeignKey('domain.id'))
     description = sql.Column(sql.Text())
     enabled = sql.Column(sql.Boolean)
     extra = sql.Column(sql.JsonBlob())
