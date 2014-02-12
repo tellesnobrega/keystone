@@ -43,7 +43,6 @@ class Tenant(controller.V2Controller):
         if 'name' in context['query_string']:
             return self.get_project_by_name(
                 context, context['query_string'].get('name'))
-
         self.assert_admin(context)
         tenant_refs = self.assignment_api.list_projects()
         for tenant_ref in tenant_refs:
