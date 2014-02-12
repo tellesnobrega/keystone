@@ -144,10 +144,10 @@ class V3TokenDataHelper(object):
 
     def _get_filtered_project(self, project_id):
         project_ref = self.assignment_api.get_project(project_id)
-        name_hierarchy = project_ref['name'].split(".")[-1]
+        name_hierarchy1 = project_ref['name'].split(".")[-1]
         filtered_project = {
             'id': project_ref['id'],
-            'name': name_hierarchy,
+            'name': name_hierarchy1,
             'hierarchy': project_ref['name']
             }
         filtered_project['domain'] = self._get_filtered_domain(
