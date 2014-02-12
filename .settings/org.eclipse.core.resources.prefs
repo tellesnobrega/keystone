@@ -1,0 +1,4 @@
+eclipse.preferences.version=1
+encoding//keystone/assignment/controllers.py=utf-8
+encoding//keystone/assignment/routers.py=utf-8
+encoding//keystone/openstack/common/db/sqlalchemy/migration.py=utf-8
