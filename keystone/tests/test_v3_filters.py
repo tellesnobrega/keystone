@@ -70,6 +70,13 @@ class IdentityTestFilteredCase(filtering.FilterTests,
         self.domainC = self.new_domain_ref()
         self.domainC['enabled'] = False
         self.assignment_api.create_domain(self.domainC['id'], self.domainC)
+        
+        
+        self.project_id = uuid.uuid4().hex
+        self.project = self.new_project_ref(
+            domain_id=self.domainA.domain_id)
+        self.project['id'] = self.project_id
+        self.assignment_api.create_project(self.project_id, self.project)
 
         # Now create some users, one in domainA and two of them in domainB
         self.user1 = self.new_user_ref(domain_id=self.domainA['id'])
@@ -117,6 +124,24 @@ class IdentityTestFilteredCase(filtering.FilterTests,
         """
         self._set_policy({"identity:list_users": []})
         url_by_name = '/users?domain_id=%s' % self.domainB['id']
+        r = self.get(url_by_name, auth=self.auth)
+        # We should  get back two users, those in DomainB
+        id_list = self._get_id_list_from_ref_list(r.result.get('users'))
+        self.assertIn(self.user2['id'], id_list)
+        self.assertIn(self.user3['id'], id_list)
+        
+    def test_list_users_filtered_by_project(self):
+        """GET /users?project_id=myproject (filtered)
+
+        Test Plan:
+
+        - Update policy so api is unprotected
+        - Use an un-scoped token to make sure we can filter the
+          users by projectB, getting back the 2 users in that project
+
+        """
+        self._set_policy({"identity:list_users": []})
+        url_by_name = '/users?default_project=%s' % self.project['id']
         r = self.get(url_by_name, auth=self.auth)
         # We should  get back two users, those in DomainB
         id_list = self._get_id_list_from_ref_list(r.result.get('users'))

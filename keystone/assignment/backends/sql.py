@@ -408,10 +408,12 @@ class Assignment(sql.Base, assignment.Driver):
     # CRUD
     @sql.handle_conflicts(conflict_type='project')
     def create_project(self, tenant_id, tenant):
+        default_name = 'openstack'
         tenant['name'] = clean.project_name(tenant['name'])
         with sql.transaction() as session:
             tenant_ref = Project.from_dict(tenant)
             temp_name = ''
+            tenant_ref.name = default_name
             if tenant['parent_project_id'] is not None:
 	           parent_tenant = self._get_project(session,
 	                   tenant['parent_project_id'])
@@ -684,7 +686,7 @@ class Project(sql.ModelBase, sql.DictBase):
                   'description', 'enabled']
     id = sql.Column(sql.String(64), primary_key=True)
     name = sql.Column(sql.String(64), nullable=False)
-    domain_id = sql.Column(sql.String(64), sql.ForeignKey('domain.id'),
+    domain_id = sql.Column(sql.String(64),
                            nullable=False)
     parent_project_id = sql.Column(sql.String(64))
     description = sql.Column(sql.Text())
