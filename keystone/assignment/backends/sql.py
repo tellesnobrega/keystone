@@ -416,7 +416,10 @@ class Assignment(sql.Base, assignment.Driver):
             if tenant['parent_project_id'] is not None:
                 parent_tenant = self._get_project(session,
                                                   tenant['parent_project_id'])
-                temp_name = parent_tenant['name'] + '.' + tenant['name']
+                if parent_tenant is None:
+                    temp_name = 'openstack'
+                else:
+                    temp_name = parent_tenant['name'] + '.' + tenant['name']
                 tenant_ref.name = temp_name
             session.add(tenant_ref)
             return tenant_ref.to_dict()
@@ -687,8 +690,8 @@ class Project(sql.ModelBase, sql.DictBase):
     name = sql.Column(sql.String(64), nullable=False)
     domain_id = sql.Column(sql.String(64), sql.ForeignKey('domain.id'),
                            nullable=False)
-    parent_project_id = sql.Column(sql.String(64),
-                                   sql.ForeignKey('project.id'))
+    '''parent_project_id = sql.Column(sql.String(64),
+                                   sql.ForeignKey('project.id'))'''
     description = sql.Column(sql.Text())
     enabled = sql.Column(sql.Boolean)
     extra = sql.Column(sql.JsonBlob())
