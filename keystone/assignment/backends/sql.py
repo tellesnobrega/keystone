@@ -412,6 +412,7 @@ class Assignment(sql.Base, assignment.Driver):
         with sql.transaction() as session:
             tenant_ref = Project.from_dict(tenant)
             temp_name = ''
+	    test = ''
             if tenant['parent_project_id'] is not None:
                 parent_tenant = self._get_project(session,
                                                   tenant['parent_project_id'])
