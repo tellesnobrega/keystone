@@ -411,14 +411,14 @@ class Assignment(sql.Base, assignment.Driver):
         tenant['name'] = clean.project_name(tenant['name'])
         with sql.transaction() as session:
             tenant_ref = Project.from_dict(tenant)
-	    temp_name = ''
-	    if tenant['parent_project_id'] is not None:
-	        parent_tenant = self._get_project(session,
+            temp_name = ''
+            if tenant['parent_project_id'] is not None:
+                parent_tenant = self._get_project(session,
 	                                          tenant['parent_project_id'])
-	        temp_name = parent_tenant['name'] + '.' + tenant['name']
-	        tenant_ref.name = temp_name
-	    session.add(tenant_ref)
-	    return tenant_ref.to_dict()
+                temp_name = parent_tenant['name'] + '.' + tenant['name']
+                tenant_ref.name = temp_name
+        session.add(tenant_ref)
+        return tenant_ref.to_dict()
 
     @sql.handle_conflicts(conflict_type='project')
     def update_project(self, tenant_id, tenant):
