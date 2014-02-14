@@ -147,7 +147,7 @@ class V3TokenDataHelper(object):
         name_hierarchy = project_ref['name'].split(".")[-1]
         filtered_project = {
             'id': project_ref['id'],
-            'name': name_hierarchy,
+            'name': project_ref['name'],
             'hierarchy': project_ref['name']
             }
         filtered_project['domain'] = self._get_filtered_domain(
