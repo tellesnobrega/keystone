@@ -415,10 +415,7 @@ class Assignment(sql.Base, assignment.Driver):
             if tenant['parent_project_id'] is not None:
                 parent_tenant = self._get_project(session,
                                                   tenant['parent_project_id'])
-                if parent_tenant is None:
-                    temp_name = 'openstack'
-                else:
-                    temp_name = parent_tenant['name'] + '.' + tenant['name']
+                temp_name = parent_tenant['name'] + '.' + tenant['name']
 	        tenant_ref.name = temp_name
             session.add(tenant_ref)
             return tenant_ref.to_dict()
