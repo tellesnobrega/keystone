@@ -53,6 +53,18 @@ class Assignment(sql.Base, assignment.Driver):
                 raise exception.ProjectNotFound(project_id=tenant_name)
             return project_ref.to_dict()
 
+    def get_project_hierarchy(self, project_id):
+        with sql.transaction() as session:
+            tenant_ref = self._get_project(session, tenant_id)
+	        tenant = tenant_ref.to_dict()
+            hierarchy = ''
+            while tenant['parent_project_id'] is not None:
+                parent_tenant = self._get_project(session,
+                                                  tenant['parent_project_id'])
+                hierarchy = parent_tenant['id'] + '.' + tenant['id']
+                tenant = parent_tenant
+            return 'openstack.' + hierarchy
+
     def list_user_ids_for_project(self, tenant_id):
         with sql.transaction() as session:
             self._get_project(session, tenant_id)
@@ -412,12 +424,12 @@ class Assignment(sql.Base, assignment.Driver):
         tenant['name'] = clean.project_name(tenant['name'])
         with sql.transaction() as session:
             tenant_ref = Project.from_dict(tenant)
-            temp_name = ''
+            """temp_name = ''
             if tenant['parent_project_id'] is not default_parent_project:
                 parent_tenant = self._get_project(session,
                                                   tenant['parent_project_id'])
                 temp_name = parent_tenant['name'] + '.' + tenant['name']
-	        tenant_ref.name = temp_name
+	        tenant_ref.name = temp_name"""
             session.add(tenant_ref)
             return tenant_ref.to_dict()
 

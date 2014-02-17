@@ -408,6 +408,11 @@ class ProjectV3(controller.V3Controller):
         return ProjectV3.wrap_member(context, ref)
 
     @controller.protected()
+    def get_project_hierarchy(self, context, project_id):
+        ref = self.assignment_api.get_project_hierarchy(project_id)
+        return ProjectV3.wrap_member(context, ref)
+
+    @controller.protected()
     def update_project(self, context, project_id, project):
         self._require_matching_id(project_id, project)
 
