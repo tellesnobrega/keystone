@@ -420,12 +420,11 @@ class Assignment(sql.Base, assignment.Driver):
     # CRUD
     @sql.handle_conflicts(conflict_type='project')
     def create_project(self, tenant_id, tenant):
-    	default_parent_project = "openstack"
         tenant['name'] = clean.project_name(tenant['name'])
         with sql.transaction() as session:
             tenant_ref = Project.from_dict(tenant)
             """temp_name = ''
-            if tenant['parent_project_id'] is not default_parent_project:
+            if tenant['parent_project_id'] is not None:
                 parent_tenant = self._get_project(session,
                                                   tenant['parent_project_id'])
                 temp_name = parent_tenant['name'] + '.' + tenant['name']
