@@ -409,7 +409,7 @@ class ProjectV3(controller.V3Controller):
 
     @controller.protected()
     def get_project_hierarchy(self, context, project_id):
-        ref = self.assignment_api.get_project_hierarchy(project_id)
+        ref = self.assignment_api.get_project(project_id)
         return ProjectV3.wrap_member(context, ref)
 
     @controller.protected()
