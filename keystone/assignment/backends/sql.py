@@ -57,11 +57,13 @@ class Assignment(sql.Base, assignment.Driver):
         with sql.transaction() as session:
             tenant_ref = self._get_project(session, tenant_id)
 	        tenant = tenant_ref.to_dict()
-            hierarchy = ''
+            hierarchy = tenant['id']
             while tenant['parent_project_id'] is not None:
-                parent_tenant = self._get_project(session,
+                parent_tenant_ref = self._get_project(session,
                                                   tenant['parent_project_id'])
-                hierarchy = parent_tenant['id'] + '.' + tenant['id']
+
+                parent_tenant = parent_tenant_ref.to_dict()
+                hierarchy = parent_tenant['id'] + '.' + hierarchy
                 tenant = parent_tenant
             return 'openstack.' + hierarchy
 
