@@ -149,7 +149,7 @@ class V3TokenDataHelper(object):
               project_id)'''
         filtered_project = {
             'id': project_ref['id'],
-            '''hierarchical_id': project_hierarchical_ids,'''
+'''            'hierarchical_id': project_hierarchical_ids,'''
             'name': project_ref['name'],
             'hierarchy': project_ref['name']
             }
