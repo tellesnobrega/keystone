@@ -145,11 +145,11 @@ class V3TokenDataHelper(object):
     def _get_filtered_project(self, project_id):
         project_ref = self.assignment_api.get_project(project_id)
         """name_hierarchy = project_ref['name'].split(".")[-1]"""
-        project_hierarchical_ids = self.assignment_api.get_project_hierarchy(
-              project_id)
+        '''project_hierarchical_ids = self.assignment_api.get_project_hierarchy(
+              project_id)'''
         filtered_project = {
             'id': project_ref['id'],
-            'hierarchical_id': project_hierarchical_ids,
+            '''hierarchical_id': project_hierarchical_ids,'''
             'name': project_ref['name'],
             'hierarchy': project_ref['name']
             }
