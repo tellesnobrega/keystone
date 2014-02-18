@@ -415,8 +415,8 @@ class Manager(manager.Manager):
     # NOTE(tellesnobrega): get_project_hierarchy is actually an internal method
     # and not exposed via the API. Therefore there is no need to support 
     # dirver hints for it.
-    '''def get_project_hierarchy(self, project_id):
-        return self.driver.get_project_hierarchy(project_id)'''
+    def get_project_hierarchy(self, project_id):
+        return self.driver.get_project_hierarchy(project_id)
 
     @cache.on_arguments(should_cache_fn=SHOULD_CACHE,
                         expiration_time=EXPIRATION_TIME)
@@ -827,7 +827,7 @@ class Driver(object):
         """
         raise exception.NotImplemented()
 
-    '''@abc.abstractmethod
+    @abc.abstractmethod
     def get_project_hierarchy(self, project_id):
         """Get a project hierarchy by ID.
 
@@ -835,7 +835,7 @@ class Driver(object):
         :raises: keystone.exception.ProjectNotFound
 
         """
-        raise exception.NotImplemented()'''
+        raise exception.NotImplemented()
 
     @abc.abstractmethod
     def update_project(self, project_id, project):
