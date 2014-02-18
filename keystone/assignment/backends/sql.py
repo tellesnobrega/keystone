@@ -62,6 +62,7 @@ class Assignment(sql.Base, assignment.Driver):
                         tenant['parent_project_id']).to_dict()
                 hierarchy = parent_tenant['id'] + '.' + hierarchy
                 tenant = parent_tenant
+            hierarchy = "openstack." + hierarchy
             return hierarchy
 
     def list_user_ids_for_project(self, tenant_id):
