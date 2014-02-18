@@ -53,7 +53,7 @@ class Assignment(sql.Base, assignment.Driver):
                 raise exception.ProjectNotFound(project_id=tenant_name)
             return project_ref.to_dict()
 
-    def get_project_test(self, tenant_id):
+    def get_project_hierarchy(self, tenant_id):
         with sql.transaction() as session:
             return self._get_project(session, tenant_id).to_dict()
 
