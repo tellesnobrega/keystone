@@ -55,7 +55,9 @@ class Assignment(sql.Base, assignment.Driver):
 
     def get_project_hierarchy(self, tenant_id):
         with sql.transaction() as session:
-            return self._get_project(session, tenant_id).to_dict()
+            tenant = self._get_project(session, tenant_id).to_dict()
+            hierarchy = tenant['id']
+            return hierarchy
 
     '''def get_project_hierarchy(self, tenant_id):
         with sql.transaction() as session:
