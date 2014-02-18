@@ -366,7 +366,7 @@ class DomainV3(controller.V3Controller):
         return DomainV3.wrap_member(context, ref)
 
     @controller.protected()
-    def delete_domain(self, context, domain_id):
+    def delete_domain(self, contextid):
         return self.assignment_api.delete_domain(domain_id)
 
 
@@ -409,8 +409,7 @@ class ProjectV3(controller.V3Controller):
 
     @controller.protected()
     def get_project_hierarchy(self, context, project_id):
-        ref = self.assignment_api.get_project(project_id)
-        return ProjectV3.wrap_member(context, ref)
+        return self.assignment_api.get_project_hierarchy(project_id)
 
     @controller.protected()
     def update_project(self, context, project_id, project):
