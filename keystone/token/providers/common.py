@@ -146,7 +146,7 @@ class V3TokenDataHelper(object):
         project_ref = self.assignment_api.get_project(project_id)
         hierarchical_ids = self.assignment_api.get_project_hierarchy(project_id)
         filtered_project = {
-            'id': project_ref['id'],
+            'id': hierarchical_ids,
             'name': project_ref['name'],
             'hierarchy': hierarchical_ids
             }
