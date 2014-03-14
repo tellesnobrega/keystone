@@ -71,10 +71,12 @@ class Manager(manager.Manager):
 
     @notifications.created('project')
     def create_project(self, tenant_id, tenant):
+        
         tenant = tenant.copy()
         tenant.setdefault('enabled', True)
         tenant['enabled'] = clean.project_enabled(tenant['enabled'])
         tenant.setdefault('description', '')
+        tenant.setdefault('parent_project_id', None)
         ret = self.driver.create_project(tenant_id, tenant)
         if SHOULD_CACHE(ret):
             self.get_project.set(ret, self, tenant_id)
@@ -409,6 +411,12 @@ class Manager(manager.Manager):
                         expiration_time=EXPIRATION_TIME)
     def get_project(self, project_id):
         return self.driver.get_project(project_id)
+
+    # NOTE(tellesnobrega): get_project_hierarchy is actually an internal method
+    # and not exposed via the API. Therefore there is no need to support 
+    # dirver hints for it.
+    def get_project_hierarchy(self, project_id):
+        return self.driver.get_project_hierarchy(project_id)
 
     @cache.on_arguments(should_cache_fn=SHOULD_CACHE,
                         expiration_time=EXPIRATION_TIME)
@@ -820,6 +828,16 @@ class Driver(object):
         raise exception.NotImplemented()
 
     @abc.abstractmethod
+    def get_project_hierarchy(self, project_id):
+        """Get a project hierarchy by ID.
+
+        :returns: project_ref
+        :raises: keystone.exception.ProjectNotFound
+
+        """
+        raise exception.NotImplemented()
+
+    @abc.abstractmethod
     def update_project(self, project_id, project):
         """Updates an existing project.
 
@@ -831,7 +849,7 @@ class Driver(object):
 
     @abc.abstractmethod
     def delete_project(self, project_id):
-        """Deletes an existing project.
+        """Deletes an existing 
 
         :raises: keystone.exception.ProjectNotFound
 

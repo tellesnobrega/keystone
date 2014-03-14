@@ -1,7 +1,7 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
+# vim: tabstop=5 shiftwidth=4 softtabstop=4
 
 # Copyright 2012-13 OpenStack Foundation
-#
+
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -52,6 +52,20 @@ class Assignment(sql.Base, assignment.Driver):
             except sql.NotFound:
                 raise exception.ProjectNotFound(project_id=tenant_name)
             return project_ref.to_dict()
+
+    def get_project_hierarchy(self, tenant_id):
+        with sql.transaction() as session:
+            tenant = self._get_project(session, tenant_id).to_dict()
+            hierarchy = tenant['id']
+            while tenant['parent_project_id'] is not None:
+                parent_tenant = self._get_project(session,
+                        tenant['parent_project_id']).to_dict()
+                '''hierarchy = parent_tenant['id'] + '.' + hierarchy'''
+                #NOTE Keep compatible with Vishy's code
+                hierarchy = parent_tenant['id'] + hierarchy
+                tenant = parent_tenant
+            '''hierarchy = "openstack." + hierarchy'''
+            return hierarchy
 
     def list_user_ids_for_project(self, tenant_id):
         with sql.transaction() as session:
@@ -404,13 +418,19 @@ class Assignment(sql.Base, assignment.Driver):
                                             'project_id': x.project_id,
                                             'role_id': r})
             return assignment_list
-
+    
     # CRUD
     @sql.handle_conflicts(conflict_type='project')
     def create_project(self, tenant_id, tenant):
         tenant['name'] = clean.project_name(tenant['name'])
         with sql.transaction() as session:
             tenant_ref = Project.from_dict(tenant)
+            temp_name = ''
+            if tenant['parent_project_id'] is not None:
+                parent_tenant = self._get_project(session,
+                                                  tenant['parent_project_id'])
+                temp_name = parent_tenant['name'] + '.' + tenant['name']
+	        tenant_ref.name = temp_name
             session.add(tenant_ref)
             return tenant_ref.to_dict()
 
@@ -674,11 +694,13 @@ class Domain(sql.ModelBase, sql.DictBase):
 
 class Project(sql.ModelBase, sql.DictBase):
     __tablename__ = 'project'
-    attributes = ['id', 'name', 'domain_id', 'description', 'enabled']
+    attributes = ['id', 'name', 'domain_id', 'parent_project_id',
+                  'description', 'enabled']
     id = sql.Column(sql.String(64), primary_key=True)
     name = sql.Column(sql.String(64), nullable=False)
     domain_id = sql.Column(sql.String(64), sql.ForeignKey('domain.id'),
                            nullable=False)
+    parent_project_id = sql.Column(sql.String(64))
     description = sql.Column(sql.Text())
     enabled = sql.Column(sql.Boolean)
     extra = sql.Column(sql.JsonBlob())
