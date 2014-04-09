@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -30,9 +28,9 @@ from keystone.common import manager
 from keystone import config
 from keystone import exception
 from keystone import notifications
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import importutils
 from keystone.openstack.common import log
-from keystone.openstack.common import versionutils
 
 
 CONF = config.CONF
@@ -40,13 +38,8 @@ CONF = config.CONF
 LOG = log.getLogger(__name__)
 
 
-def moved_to_assignment(f):
-    name = f.__name__
-    deprecated = versionutils.deprecated(versionutils.deprecated.ICEHOUSE,
-                                         what="identity_api." + name,
-                                         in_favor_of="assignment_api." + name,
-                                         remove_in=+1)
-    return deprecated(f)
+DOMAIN_CONF_FHEAD = 'keystone.'
+DOMAIN_CONF_FTAIL = '.conf'
 
 
 def filter_user(user_ref):
@@ -74,7 +67,7 @@ def filter_user(user_ref):
 class DomainConfigs(dict):
     """Discover, store and provide access to domain specific configs.
 
-    The setup_domain_drives() call will be made via the wrapper from
+    The setup_domain_drivers() call will be made via the wrapper from
     the first call to any driver function handled by this manager. This
     setup call it will scan the domain config directory for files of the form
 
@@ -105,20 +98,20 @@ class DomainConfigs(dict):
             LOG.warning(
                 _('Invalid domain name (%s) found in config file name'),
                 domain_name)
+            return
 
-        if domain_ref:
-            # Create a new entry in the domain config dict, which contains
-            # a new instance of both the conf environment and driver using
-            # options defined in this set of config files.  Later, when we
-            # service calls via this Manager, we'll index via this domain
-            # config dict to make sure we call the right driver
-            domain = domain_ref['id']
-            self[domain] = {}
-            self[domain]['cfg'] = cfg.ConfigOpts()
-            config.configure(conf=self[domain]['cfg'])
-            self[domain]['cfg'](args=[], project='keystone',
-                                default_config_files=file_list)
-            self._load_driver(assignment_api, domain)
+        # Create a new entry in the domain config dict, which contains
+        # a new instance of both the conf environment and driver using
+        # options defined in this set of config files.  Later, when we
+        # service calls via this Manager, we'll index via this domain
+        # config dict to make sure we call the right driver
+        domain = domain_ref['id']
+        self[domain] = {}
+        self[domain]['cfg'] = cfg.ConfigOpts()
+        config.configure(conf=self[domain]['cfg'])
+        self[domain]['cfg'](args=[], project='keystone',
+                            default_config_files=file_list)
+        self._load_driver(assignment_api, domain)
 
     def setup_domain_drivers(self, standard_driver, assignment_api):
         # This is called by the api call wrapper
@@ -133,12 +126,13 @@ class DomainConfigs(dict):
 
         for r, d, f in os.walk(conf_dir):
             for fname in f:
-                if fname.startswith('keystone.') and fname.endswith('.conf'):
-                    names = fname.split('.')
-                    if len(names) == 3:
+                if (fname.startswith(DOMAIN_CONF_FHEAD) and
+                        fname.endswith(DOMAIN_CONF_FTAIL)):
+                    if fname.count('.') >= 2:
                         self._load_config(assignment_api,
                                           [os.path.join(r, fname)],
-                                          names[1])
+                                          fname[len(DOMAIN_CONF_FHEAD):
+                                                -len(DOMAIN_CONF_FTAIL)])
                     else:
                         LOG.debug(_('Ignoring file (%s) while scanning domain '
                                     'config directory'),
@@ -192,6 +186,7 @@ def domains_configured(f):
 
 
 @dependency.provider('identity_api')
+@dependency.optional('revoke_api')
 @dependency.requires('assignment_api', 'credential_api', 'token_api')
 class Manager(manager.Manager):
     """Default pivot point for the Identity backend.
@@ -212,6 +207,8 @@ class Manager(manager.Manager):
     the domain in question.
 
     """
+    _USER = 'user'
+    _GROUP = 'group'
 
     def __init__(self):
         super(Manager, self).__init__(CONF.identity.driver)
@@ -254,13 +251,6 @@ class Manager(manager.Manager):
             self.assignment_api.get_domain(domain_id)
             return self.driver
 
-    def _get_domain_conf(self, domain_id):
-        conf = self.domain_configs.get_domain_conf(domain_id)
-        if conf:
-            return conf
-        else:
-            return CONF
-
     def _get_domain_id_and_driver(self, domain_scope):
         domain_id = self._normalize_scope(domain_scope)
         driver = self._select_identity_driver(domain_id)
@@ -279,15 +269,16 @@ class Manager(manager.Manager):
     # - select the right driver for this domain
     # - clear/set domain_ids for drivers that do not support domains
 
+    @notifications.emit_event('authenticate')
     @domains_configured
-    def authenticate(self, user_id, password, domain_scope=None):
+    def authenticate(self, context, user_id, password, domain_scope=None):
         domain_id, driver = self._get_domain_id_and_driver(domain_scope)
         ref = driver.authenticate(user_id, password)
         if not driver.is_domain_aware():
             ref = self._set_domain_id(ref, domain_id)
         return ref
 
-    @notifications.created('user')
+    @notifications.created(_USER)
     @domains_configured
     def create_user(self, user_id, user_ref):
         user = user_ref.copy()
@@ -321,6 +312,7 @@ class Manager(manager.Manager):
             ref = self._set_domain_id(ref, domain_id)
         return ref
 
+    @manager.response_truncated
     @domains_configured
     def list_users(self, domain_scope=None, hints=None):
         domain_id, driver = self._get_domain_id_and_driver(domain_scope)
@@ -333,7 +325,7 @@ class Manager(manager.Manager):
             ref_list = self._set_domain_id(ref_list, domain_id)
         return ref_list
 
-    @notifications.updated('user')
+    @notifications.updated(_USER)
     @domains_configured
     def update_user(self, user_id, user_ref, domain_scope=None):
         user = user_ref.copy()
@@ -347,12 +339,14 @@ class Manager(manager.Manager):
             user = self._clear_domain_id(user)
         ref = driver.update_user(user_id, user)
         if user.get('enabled') is False or user.get('password') is not None:
+            if self.revoke_api:
+                self.revoke_api.revoke_by_user(user_id)
             self.token_api.delete_tokens_for_user(user_id)
         if not driver.is_domain_aware():
             ref = self._set_domain_id(ref, domain_id)
         return ref
 
-    @notifications.deleted('user')
+    @notifications.deleted(_USER)
     @domains_configured
     def delete_user(self, user_id, domain_scope=None):
         domain_id, driver = self._get_domain_id_and_driver(domain_scope)
@@ -360,7 +354,7 @@ class Manager(manager.Manager):
         self.credential_api.delete_credentials_for_user(user_id)
         self.token_api.delete_tokens_for_user(user_id)
 
-    @notifications.created('group')
+    @notifications.created(_GROUP)
     @domains_configured
     def create_group(self, group_id, group_ref):
         group = group_ref.copy()
@@ -384,7 +378,7 @@ class Manager(manager.Manager):
             ref = self._set_domain_id(ref, domain_id)
         return ref
 
-    @notifications.updated('group')
+    @notifications.updated(_GROUP)
     @domains_configured
     def update_group(self, group_id, group, domain_scope=None):
         domain_id, driver = self._get_domain_id_and_driver(domain_scope)
@@ -395,18 +389,26 @@ class Manager(manager.Manager):
             ref = self._set_domain_id(ref, domain_id)
         return ref
 
-    @notifications.deleted('group')
+    def revoke_tokens_for_group(self, group_id, domain_scope):
+        # We get the list of users before we attempt the group
+        # deletion, so that we can remove these tokens after we know
+        # the group deletion succeeded.
+
+        # TODO(ayoung): revoke based on group and roleids instead
+        user_ids = []
+        for u in self.list_users_in_group(group_id, domain_scope):
+            user_ids.append(u['id'])
+            if self.revoke_api:
+                self.revoke_api.revoke_by_user(u['id'])
+        self.token_api.delete_tokens_for_users(user_ids)
+
+    @notifications.deleted(_GROUP)
     @domains_configured
     def delete_group(self, group_id, domain_scope=None):
         domain_id, driver = self._get_domain_id_and_driver(domain_scope)
         # As well as deleting the group, we need to invalidate
         # any tokens for the users who are members of the group.
-        # We get the list of users before we attempt the group
-        # deletion, so that we can remove these tokens after we know
-        # the group deletion succeeded.
-        user_ids = [
-            u['id'] for u in self.list_users_in_group(group_id, domain_scope)]
-        self.token_api.delete_tokens_for_users(user_ids)
+        self.revoke_tokens_for_group(group_id, domain_scope)
         driver.delete_group(group_id)
 
     @domains_configured
@@ -419,8 +421,15 @@ class Manager(manager.Manager):
     def remove_user_from_group(self, user_id, group_id, domain_scope=None):
         domain_id, driver = self._get_domain_id_and_driver(domain_scope)
         driver.remove_user_from_group(user_id, group_id)
+        # TODO(ayoung) revoking all tokens for a user based on group
+        # membership is overkill, as we only would need to revoke tokens
+        # that had role assignments via the group.  Calculating those
+        # assignments would have to be done by the assignment backend.
+        if self.revoke_api:
+            self.revoke_api.revoke_by_user(user_id)
         self.token_api.delete_tokens_for_user(user_id)
 
+    @manager.response_truncated
     @domains_configured
     def list_groups_for_user(self, user_id, domain_scope=None,
                              hints=None):
@@ -435,6 +444,7 @@ class Manager(manager.Manager):
             ref_list = self._set_domain_id(ref_list, domain_id)
         return ref_list
 
+    @manager.response_truncated
     @domains_configured
     def list_groups(self, domain_scope=None, hints=None):
         domain_id, driver = self._get_domain_id_and_driver(domain_scope)
@@ -447,6 +457,7 @@ class Manager(manager.Manager):
             ref_list = self._set_domain_id(ref_list, domain_id)
         return ref_list
 
+    @manager.response_truncated
     @domains_configured
     def list_users_in_group(self, group_id, domain_scope=None,
                             hints=None):
@@ -464,137 +475,26 @@ class Manager(manager.Manager):
     @domains_configured
     def check_user_in_group(self, user_id, group_id, domain_scope=None):
         domain_id, driver = self._get_domain_id_and_driver(domain_scope)
-        return driver.check_user_in_group(user_id, group_id)
+        driver.check_user_in_group(user_id, group_id)
 
-    # TODO(morganfainberg): Remove the following deprecated methods once
-    # Icehouse is released.  Maintain identity -> assignment proxy for 1
-    # release.
-    @moved_to_assignment
-    def get_domain_by_name(self, domain_name):
-        return self.assignment_api.get_domain_by_name(domain_name)
+    @domains_configured
+    def change_password(self, context, user_id, original_password,
+                        new_password, domain_scope):
 
-    @moved_to_assignment
-    def get_domain(self, domain_id):
-        return self.assignment_api.get_domain(domain_id)
+        # authenticate() will raise an AssertionError if authentication fails
+        self.authenticate(context, user_id, original_password,
+                          domain_scope=domain_scope)
 
-    @moved_to_assignment
-    def update_domain(self, domain_id, domain):
-        return self.assignment_api.update_domain(domain_id, domain)
-
-    @moved_to_assignment
-    def list_domains(self, hints=None):
-        return self.assignment_api.list_domains(hints=hints)
-
-    @moved_to_assignment
-    def delete_domain(self, domain_id):
-        return self.assignment_api.delete_domain(domain_id)
-
-    @moved_to_assignment
-    def create_domain(self, domain_id, domain):
-        return self.assignment_api.create_domain(domain_id, domain)
-
-    @moved_to_assignment
-    def list_projects_for_user(self, user_id):
-        return self.assignment_api.list_projects_for_user(user_id)
-
-    @moved_to_assignment
-    def add_user_to_project(self, tenant_id, user_id):
-        return self.assignment_api.add_user_to_project(tenant_id, user_id)
-
-    @moved_to_assignment
-    def remove_user_from_project(self, tenant_id, user_id):
-        return self.assignment_api.remove_user_from_project(tenant_id, user_id)
-
-    @moved_to_assignment
-    def get_project(self, tenant_id):
-        return self.assignment_api.get_project(tenant_id)
-
-    @moved_to_assignment
-    def list_projects(self, hints=None):
-        return self.assignment_api.list_projects(hints=hints)
-
-    @moved_to_assignment
-    def get_role(self, role_id):
-        return self.assignment_api.get_role(role_id)
-
-    @moved_to_assignment
-    def list_roles(self, hints=None):
-        return self.assignment_api.list_roles(hints=hints)
-
-    @moved_to_assignment
-    def get_project_users(self, tenant_id):
-        return self.assignment_api.get_project_users(tenant_id)
-
-    @moved_to_assignment
-    def get_roles_for_user_and_project(self, user_id, tenant_id):
-        return self.assignment_api.get_roles_for_user_and_project(
-            user_id, tenant_id)
-
-    @moved_to_assignment
-    def get_roles_for_user_and_domain(self, user_id, domain_id):
-        return (self.assignment_api.get_roles_for_user_and_domain
-                (user_id, domain_id))
-
-    @moved_to_assignment
-    def add_role_to_user_and_project(self, user_id,
-                                     tenant_id, role_id):
-        return (self.assignment_api.add_role_to_user_and_project
-                (user_id, tenant_id, role_id))
-
-    @moved_to_assignment
-    def create_role(self, role_id, role):
-        return self.assignment_api.create_role(role_id, role)
-
-    @moved_to_assignment
-    def delete_role(self, role_id):
-        return self.assignment_api.delete_role(role_id)
-
-    @moved_to_assignment
-    def remove_role_from_user_and_project(self, user_id,
-                                          tenant_id, role_id):
-        return (self.assignment_api.remove_role_from_user_and_project
-                (user_id, tenant_id, role_id))
-
-    @moved_to_assignment
-    def update_role(self, role_id, role):
-        return self.assignment_api.update_role(role_id, role)
-
-    @moved_to_assignment
-    def create_grant(self, role_id, user_id=None, group_id=None,
-                     domain_id=None, project_id=None,
-                     inherited_to_projects=False):
-        return (self.assignment_api.create_grant
-                (role_id, user_id, group_id, domain_id, project_id,
-                 inherited_to_projects))
-
-    @moved_to_assignment
-    def list_grants(self, user_id=None, group_id=None,
-                    domain_id=None, project_id=None,
-                    inherited_to_projects=False):
-        return (self.assignment_api.list_grants
-                (user_id, group_id, domain_id, project_id,
-                 inherited_to_projects))
-
-    @moved_to_assignment
-    def get_grant(self, role_id, user_id=None, group_id=None,
-                  domain_id=None, project_id=None,
-                  inherited_to_projects=False):
-        return (self.assignment_api.get_grant
-                (role_id, user_id, group_id, domain_id, project_id,
-                 inherited_to_projects))
-
-    @moved_to_assignment
-    def delete_grant(self, role_id, user_id=None, group_id=None,
-                     domain_id=None, project_id=None,
-                     inherited_to_projects=False):
-        return (self.assignment_api.delete_grant
-                (role_id, user_id, group_id, domain_id, project_id,
-                 inherited_to_projects))
+        update_dict = {'password': new_password}
+        self.update_user(user_id, update_dict, domain_scope=domain_scope)
 
 
 @six.add_metaclass(abc.ABCMeta)
 class Driver(object):
     """Interface description for an Identity driver."""
+
+    def _get_list_limit(self):
+        return CONF.identity.list_limit or CONF.list_limit
 
     @abc.abstractmethod
     def authenticate(self, user_id, password):
@@ -778,4 +678,4 @@ class Driver(object):
         """Indicates if Driver supports domains."""
         raise exception.NotImplemented()
 
-    #end of identity
+    # end of identity

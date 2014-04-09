@@ -1,5 +1,4 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
+# -*- coding: utf-8 -*-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -16,14 +15,15 @@
 
 import uuid
 
+import mock
 import sqlalchemy
+from sqlalchemy import exc
 
 from keystone.common import sql
 from keystone import config
 from keystone import exception
 from keystone.identity.backends import sql as identity_sql
-from keystone.openstack.common.db.sqlalchemy import session as db_session
-from keystone.openstack.common.fixture import moxstubout
+from keystone.openstack.common.db import exception as db_exception
 from keystone import tests
 from keystone.tests import default_fixtures
 from keystone.tests import test_backend
@@ -34,20 +34,21 @@ CONF = config.CONF
 DEFAULT_DOMAIN_ID = CONF.identity.default_domain_id
 
 
-class SqlTests(tests.TestCase, sql.Base):
+class SqlTests(tests.SQLDriverOverrides, tests.TestCase):
 
     def setUp(self):
         super(SqlTests, self).setUp()
-        self.config([tests.dirs.etc('keystone.conf.sample'),
-                     tests.dirs.tests('test_overrides.conf'),
-                     tests.dirs.tests('backend_sql.conf')])
-
         self.load_backends()
 
         # populate the engine with tables & fixtures
         self.load_fixtures(default_fixtures)
-        #defaulted by the data load
+        # defaulted by the data load
         self.user_foo['enabled'] = True
+
+    def config_files(self):
+        config_files = super(SqlTests, self).config_files()
+        config_files.append(tests.dirs.tests_conf('backend_sql.conf'))
+        return config_files
 
 
 class SqlModels(SqlTests):
@@ -69,7 +70,7 @@ class SqlModels(SqlTests):
         for col, type_, length in cols:
             self.assertIsInstance(table.c[col].type, type_)
             if length:
-                self.assertEqual(table.c[col].type.length, length)
+                self.assertEqual(length, table.c[col].type.length)
 
     def test_user_model(self):
         cols = (('id', sql.String, 64),
@@ -108,29 +109,13 @@ class SqlModels(SqlTests):
                 ('name', sql.String, 255))
         self.assertExpectedSchema('role', cols)
 
-    def test_user_project_metadata_model(self):
-        cols = (('user_id', sql.String, 64),
-                ('project_id', sql.String, 64),
-                ('data', sql.JsonBlob, None))
-        self.assertExpectedSchema('user_project_metadata', cols)
-
-    def test_user_domain_metadata_model(self):
-        cols = (('user_id', sql.String, 64),
-                ('domain_id', sql.String, 64),
-                ('data', sql.JsonBlob, None))
-        self.assertExpectedSchema('user_domain_metadata', cols)
-
-    def test_group_project_metadata_model(self):
-        cols = (('group_id', sql.String, 64),
-                ('project_id', sql.String, 64),
-                ('data', sql.JsonBlob, None))
-        self.assertExpectedSchema('group_project_metadata', cols)
-
-    def test_group_domain_metadata_model(self):
-        cols = (('group_id', sql.String, 64),
-                ('domain_id', sql.String, 64),
-                ('data', sql.JsonBlob, None))
-        self.assertExpectedSchema('group_domain_metadata', cols)
+    def test_role_assignment_model(self):
+        cols = (('type', sql.Enum, None),
+                ('actor_id', sql.String, 64),
+                ('target_id', sql.String, 64),
+                ('role_id', sql.String, 64),
+                ('inherited', sql.Boolean, False))
+        self.assertExpectedSchema('assignment', cols)
 
     def test_user_group_membership(self):
         cols = (('group_id', sql.String, 64),
@@ -140,7 +125,7 @@ class SqlModels(SqlTests):
 
 class SqlIdentity(SqlTests, test_backend.IdentityTests):
     def test_password_hashed(self):
-        session = db_session.get_session()
+        session = sql.get_session()
         user_ref = self.identity_api._get_user(session, self.user_foo['id'])
         self.assertNotEqual(user_ref['password'], self.user_foo['password'])
 
@@ -211,7 +196,7 @@ class SqlIdentity(SqlTests, test_backend.IdentityTests):
                                                 user['id'])
         self.assignment_api.delete_project(self.tenant_bar['id'])
         tenants = self.assignment_api.list_projects_for_user(user['id'])
-        self.assertEqual(tenants, [])
+        self.assertEqual([], tenants)
 
     def test_metadata_removed_on_delete_user(self):
         # A test to check that the internal representation
@@ -329,7 +314,7 @@ class SqlIdentity(SqlTests, test_backend.IdentityTests):
             'password': uuid.uuid4().hex}
 
         self.identity_api.create_user(user_id, user)
-        session = db_session.get_session()
+        session = sql.get_session()
         query = session.query(identity_sql.User)
         query = query.filter_by(id=user_id)
         raw_user_ref = query.one()
@@ -348,52 +333,61 @@ class SqlToken(SqlTests, test_backend.TokenTests):
         # This query used to be heavy with too many columns. We want
         # to make sure it is only running with the minimum columns
         # necessary.
-        fixture = self.useFixture(moxstubout.MoxStubout())
-        self.mox = fixture.mox
-        tok = token_sql.Token()
-        session = db_session.get_session()
-        q = session.query(token_sql.TokenModel.id,
-                          token_sql.TokenModel.expires)
-        self.mox.StubOutWithMock(session, 'query')
-        session.query(token_sql.TokenModel.id,
-                      token_sql.TokenModel.expires).AndReturn(q)
-        self.mox.StubOutWithMock(db_session, 'get_session')
-        db_session.get_session().AndReturn(session)
-        self.mox.ReplayAll()
-        tok.list_revoked_tokens()
+
+        expected_query_args = (token_sql.TokenModel.id,
+                               token_sql.TokenModel.expires)
+
+        with mock.patch.object(token_sql, 'sql') as mock_sql:
+            tok = token_sql.Token()
+            tok.list_revoked_tokens()
+
+        mock_query = mock_sql.get_session().query
+        mock_query.assert_called_with(*expected_query_args)
 
     def test_flush_expired_tokens_batch(self):
-        # This test simply executes the code under test to verify
-        # that the code is legal.  It is not possible to test
-        # whether records are deleted in batches using sqlite,
-        # because the limit function does not seem to affect
-        # delete subqueries; these are, however, legal.
-        # After several failed attempts of using mox, it would
-        # seem that the use of mock objects for testing
-        # the target code does not seem possible, because of
-        # the unique way the SQLAlchemy Query class's filter
-        # method works.
-        fixture = self.useFixture(moxstubout.MoxStubout())
-        self.mox = fixture.mox
-        tok = token_sql.Token()
-        self.mox.StubOutWithMock(tok, 'token_flush_batch_size')
-        # Just need a batch larger than 0; note that the code
-        # path with batch_size = 0 is covered by test_backend,
-        # where all backends' flush_expired_tokens methods
-        # are tested.
-        tok.token_flush_batch_size('sqlite').AndReturn(1)
-        self.mox.ReplayAll()
-        tok.flush_expired_tokens()
+        # TODO(dstanek): This test should be rewritten to be less
+        # brittle. The code will likely need to be changed first. I
+        # just copied the spirit of the existing test when I rewrote
+        # mox -> mock. These tests are brittle because they have the
+        # call structure for SQLAlchemy encoded in them.
+
+        # test sqlite dialect
+        with mock.patch.object(token_sql, 'sql') as mock_sql:
+            mock_sql.get_session().bind.dialect.name = 'sqlite'
+            tok = token_sql.Token()
+            tok.flush_expired_tokens()
+
+        self.assertFalse(mock_sql.get_session().query().filter().limit.called)
+
+    def test_flush_expired_tokens_batch_ibm_db_sa(self):
+        # TODO(dstanek): This test should be rewritten to be less
+        # brittle. The code will likely need to be changed first. I
+        # just copied the spirit of the existing test when I rewrote
+        # mox -> mock. These tests are brittle because they have the
+        # call structure for SQLAlchemy encoded in them.
+
+        # test ibm_db_sa
+        with mock.patch.object(token_sql, 'sql') as mock_sql:
+            # NOTE(dstanek): this will allow us to break out of the
+            # 'while True' loop
+            mock_sql.get_session().query().filter().delete.return_value = 0
+
+            mock_sql.get_session().bind.dialect.name = 'ibm_db_sa'
+            tok = token_sql.Token()
+            tok.flush_expired_tokens()
+
+        mock_limit = mock_sql.get_session().query().filter().limit
+        mock_limit.assert_called_with(100)
 
     def test_token_flush_batch_size_default(self):
         tok = token_sql.Token()
         sqlite_batch = tok.token_flush_batch_size('sqlite')
-        self.assertEqual(sqlite_batch, 0)
+        self.assertEqual(0, sqlite_batch)
 
     def test_token_flush_batch_size_db2(self):
         tok = token_sql.Token()
         db2_batch = tok.token_flush_batch_size('ibm_db_sa')
-        self.assertEqual(db2_batch, 100)
+        self.assertEqual(100, db2_batch)
 
 
 class SqlCatalog(SqlTests, test_backend.CatalogTests):
@@ -441,9 +435,9 @@ class SqlCatalog(SqlTests, test_backend.CatalogTests):
 
         catalog = self.catalog_api.get_catalog('user', 'tenant')
         catalog_endpoint = catalog[endpoint['region']][service['type']]
-        self.assertEqual(catalog_endpoint['name'], service['name'])
-        self.assertEqual(catalog_endpoint['id'], endpoint['id'])
-        self.assertEqual(catalog_endpoint['publicURL'], '')
+        self.assertEqual(service['name'], catalog_endpoint['name'])
+        self.assertEqual(endpoint['id'], catalog_endpoint['id'])
+        self.assertEqual('', catalog_endpoint['publicURL'])
         self.assertIsNone(catalog_endpoint.get('adminURL'))
         self.assertIsNone(catalog_endpoint.get('internalURL'))
 
@@ -486,3 +480,50 @@ class SqlTokenCacheInvalidation(SqlTests, test_backend.TokenCacheInvalidation):
 
 class SqlFilterTests(SqlTests, test_backend.FilterTests):
     pass
+
+
+class SqlLimitTests(SqlTests, test_backend.LimitTests):
+    def setUp(self):
+        super(SqlLimitTests, self).setUp()
+        test_backend.LimitTests.setUp(self)
+
+
+class FakeTable(sql.ModelBase):
+    __tablename__ = 'test_table'
+    col = sql.Column(sql.String(32), primary_key=True)
+
+    @sql.handle_conflicts('keystone')
+    def insert(self):
+        raise db_exception.DBDuplicateEntry
+
+    @sql.handle_conflicts('keystone')
+    def update(self):
+        raise db_exception.DBError(
+            inner_exception=exc.IntegrityError('a', 'a', 'a'))
+
+    @sql.handle_conflicts('keystone')
+    def lookup(self):
+        raise KeyError
+
+
+class SqlDecorators(tests.TestCase):
+
+    def test_initialization_fail(self):
+        self.assertRaises(exception.StringLengthExceeded,
+                          FakeTable, col='a' * 64)
+
+    def test_initialization(self):
+        tt = FakeTable(col='a')
+        self.assertEqual('a', tt.col)
+
+    def test_non_ascii_init(self):
+        # NOTE(I159): Non ASCII characters must cause UnicodeDecodeError
+        # if encoding is not provided explicitly.
+        self.assertRaises(UnicodeDecodeError, FakeTable, col='Я')
+
+    def test_conflict_happend(self):
+        self.assertRaises(exception.Conflict, FakeTable().insert)
+        self.assertRaises(exception.Conflict, FakeTable().update)
+
+    def test_not_conflict_error(self):
+        self.assertRaises(KeyError, FakeTable().lookup)

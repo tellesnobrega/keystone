@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -17,14 +15,7 @@
 # NOTE(dolph): please try to avoid additional fixtures if possible; test suite
 #              performance may be negatively affected.
 
-from keystone import config
-
-
-CONF = config.CONF
-
-
 DEFAULT_DOMAIN_ID = 'default'
-
 
 TENANTS = [
     {

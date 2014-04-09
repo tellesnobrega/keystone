@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -25,8 +23,7 @@ def upgrade(migrate_engine):
         'region',
         meta,
         sql.Column('id', sql.String(64), primary_key=True),
-        sql.Column('description', sql.String(255), unique=True,
-                   nullable=False),
+        sql.Column('description', sql.String(255), nullable=False),
         sql.Column('parent_region_id', sql.String(64), nullable=True),
         sql.Column('extra', sql.Text()))
     region_table.create(migrate_engine, checkfirst=True)

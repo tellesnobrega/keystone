@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
@@ -31,6 +29,7 @@ import six
 from keystone.common import config
 from keystone.common import environment
 from keystone import exception
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
 from keystone.openstack.common import strutils
 from six import moves
@@ -108,11 +107,8 @@ def hash_ldap_user_password(user):
 def hash_password(password):
     """Hash a password. Hard."""
     password_utf8 = trunc_password(password).encode('utf-8')
-    if passlib.hash.sha512_crypt.identify(password_utf8):
-        return password_utf8
-    h = passlib.hash.sha512_crypt.encrypt(password_utf8,
-                                          rounds=CONF.crypt_strength)
-    return h
+    return passlib.hash.sha512_crypt.encrypt(
+        password_utf8, rounds=CONF.crypt_strength)
 
 
 def ldap_hash_password(password):

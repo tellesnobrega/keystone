@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,13 +12,13 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import testtools
 import uuid
 
 from keystone.common import dependency
+from keystone import tests
 
 
-class TestDependencyInjection(testtools.TestCase):
+class TestDependencyInjection(tests.BaseTestCase):
     def setUp(self):
         super(TestDependencyInjection, self).setUp()
         self.addCleanup(dependency.reset)

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -17,6 +15,7 @@
 import six
 
 from keystone import exception
+from keystone.openstack.common.gettextutils import _
 
 
 def check_length(property_name, value, min_length=1, max_length=64):

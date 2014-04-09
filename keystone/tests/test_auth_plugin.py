@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -20,7 +18,6 @@ from keystone import auth
 from keystone.common import config
 from keystone import exception
 from keystone import tests
-from keystone import token
 
 
 # for testing purposes only
@@ -56,24 +53,27 @@ class NoMethodAuthPlugin(auth.AuthMethodHandler):
         pass
 
 
-class TestAuthPlugin(tests.TestCase):
+class TestAuthPlugin(tests.SQLDriverOverrides, tests.TestCase):
     def setUp(self):
         super(TestAuthPlugin, self).setUp()
-        self.config(self.config_files())
         self.load_backends()
-
-        # need to register the token provider first because auth controller
-        # depends on it
-        token.provider.Manager()
 
         self.api = auth.controllers.Auth()
 
     def config_files(self):
-        return [tests.dirs.etc('keystone.conf.sample'),
-                tests.dirs.tests('test_overrides.conf'),
-                tests.dirs.tests('backend_sql.conf'),
-                tests.dirs.tests('backend_sql_disk.conf'),
-                tests.dirs.tests('test_auth_plugin.conf')]
+        config_files = super(TestAuthPlugin, self).config_files()
+        config_files.append(tests.dirs.tests_conf('test_auth_plugin.conf'))
+        return config_files
+
+    def config_overrides(self):
+        super(TestAuthPlugin, self).config_overrides()
+        self.config_fixture.config(
+            group='auth',
+            methods=[
+                'keystone.auth.plugins.external.DefaultDomain',
+                'keystone.auth.plugins.password.Password',
+                'keystone.auth.plugins.token.Token',
+                'keystone.tests.test_auth_plugin.SimpleChallengeResponse'])
 
     def test_unsupported_auth_method(self):
         method_name = uuid.uuid4().hex
@@ -108,7 +108,7 @@ class TestAuthPlugin(tests.TestCase):
         auth_info = auth.controllers.AuthInfo.create(None, auth_data)
         auth_context = {'extras': {}, 'method_names': []}
         self.api.authenticate({'environment': {}}, auth_info, auth_context)
-        self.assertEqual(auth_context['user_id'], DEMO_USER_ID)
+        self.assertEqual(DEMO_USER_ID, auth_context['user_id'])
 
         # test incorrect response
         auth_data = {'methods': [METHOD_NAME]}
@@ -124,19 +124,23 @@ class TestAuthPlugin(tests.TestCase):
                           auth_context)
 
 
-class TestByClassNameAuthMethodRegistration(TestAuthPlugin):
+class TestAuthPluginDynamicOptions(TestAuthPlugin):
+    def config_overrides(self):
+        super(TestAuthPluginDynamicOptions, self).config_overrides()
+        # Clear the override for the [auth] ``methods`` option so it is
+        # possible to load the options from the config file.
+        self.config_fixture.conf.clear_override('methods', group='auth')
+
     def config_files(self):
-        return [tests.dirs.etc('keystone.conf.sample'),
-                tests.dirs.tests('test_overrides.conf'),
-                tests.dirs.tests('backend_sql.conf'),
-                tests.dirs.tests('backend_sql_disk.conf'),
-                tests.dirs.tests('test_auth_plugin_by_class_name.conf')]
+        config_files = super(TestAuthPluginDynamicOptions, self).config_files()
+        config_files.append(tests.dirs.tests_conf('test_auth_plugin.conf'))
+        return config_files
 
 
 class TestInvalidAuthMethodRegistration(tests.TestCase):
     def test_duplicate_auth_method_registration(self):
-        self.opt_in_group(
-            'auth',
+        self.config_fixture.config(
+            group='auth',
             methods=[
                 'keystone.tests.test_auth_plugin.SimpleChallengeResponse',
                 'keystone.tests.test_auth_plugin.DuplicateAuthPlugin'])
@@ -144,8 +148,8 @@ class TestInvalidAuthMethodRegistration(tests.TestCase):
         self.assertRaises(ValueError, auth.controllers.load_auth_methods)
 
     def test_no_method_attribute_auth_method_by_class_name_registration(self):
-        self.opt_in_group(
-            'auth',
+        self.config_fixture.config(
+            group='auth',
             methods=['keystone.tests.test_auth_plugin.NoMethodAuthPlugin'])
         self.clear_auth_plugin_registry()
         self.assertRaises(ValueError, auth.controllers.load_auth_methods)
@@ -164,9 +168,9 @@ class TestInvalidAuthMethodRegistration(tests.TestCase):
         # Guarantee we register the option we expect to unregister in cleanup
         config.CONF.register_opt(test_opt, 'auth')
 
-        self.opt_in_group('auth', methods=['test'])
-        self.opt_in_group(
-            'auth',
+        self.config_fixture.config(group='auth', methods=['test'])
+        self.config_fixture.config(
+            group='auth',
             test='keystone.tests.test_auth_plugin.MismatchedAuthPlugin')
 
         self.clear_auth_plugin_registry()

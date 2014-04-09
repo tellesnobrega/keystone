@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -23,8 +21,10 @@ from keystone.common import serializer
 from keystone.common import utils
 from keystone.common import wsgi
 from keystone import exception
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import jsonutils
 from keystone.openstack.common import log
+from keystone.openstack.common import versionutils
 
 CONF = config.CONF
 LOG = log.getLogger(__name__)
@@ -118,7 +118,7 @@ class JsonBodyMiddleware(wsgi.Middleware):
         if request.content_type not in ('application/json', ''):
             e = exception.ValidationError(attribute='application/json',
                                           target='Content-Type header')
-            return wsgi.render_exception(e)
+            return wsgi.render_exception(e, request=request)
 
         params_parsed = {}
         try:
@@ -126,7 +126,7 @@ class JsonBodyMiddleware(wsgi.Middleware):
         except ValueError:
             e = exception.ValidationError(attribute='valid JSON',
                                           target='request body')
-            return wsgi.render_exception(e)
+            return wsgi.render_exception(e, request=request)
         finally:
             if not params_parsed:
                 params_parsed = {}
@@ -145,6 +145,15 @@ class JsonBodyMiddleware(wsgi.Middleware):
 class XmlBodyMiddleware(wsgi.Middleware):
     """De/serializes XML to/from JSON."""
 
+    @versionutils.deprecated(
+        what='keystone.middleware.core.XmlBodyMiddleware',
+        as_of=versionutils.deprecated.ICEHOUSE,
+        in_favor_of='support for "application/json" only',
+        remove_in=+2)
+    def __init__(self, *args, **kwargs):
+        super(XmlBodyMiddleware, self).__init__(*args, **kwargs)
+        self.xmlns = None
+
     def process_request(self, request):
         """Transform the request from XML to JSON."""
         incoming_xml = 'application/xml' in str(request.content_type)
@@ -157,7 +166,7 @@ class XmlBodyMiddleware(wsgi.Middleware):
                 LOG.exception('Serializer failed')
                 e = exception.ValidationError(attribute='valid XML',
                                               target='request body')
-                return wsgi.render_exception(e)
+                return wsgi.render_exception(e, request=request)
 
     def process_response(self, request, response):
         """Transform the response from JSON to XML."""
@@ -166,11 +175,27 @@ class XmlBodyMiddleware(wsgi.Middleware):
             response.content_type = 'application/xml'
             try:
                 body_obj = jsonutils.loads(response.body)
-                response.body = serializer.to_xml(body_obj)
+                response.body = serializer.to_xml(body_obj, xmlns=self.xmlns)
             except Exception:
                 LOG.exception('Serializer failed')
                 raise exception.Error(message=response.body)
         return response
+
+
+class XmlBodyMiddlewareV2(XmlBodyMiddleware):
+    """De/serializes XML to/from JSON for v2.0 API."""
+
+    def __init__(self, *args, **kwargs):
+        super(XmlBodyMiddlewareV2, self).__init__(*args, **kwargs)
+        self.xmlns = 'http://docs.openstack.org/identity/api/v2.0'
+
+
+class XmlBodyMiddlewareV3(XmlBodyMiddleware):
+    """De/serializes XML to/from JSON for v3 API."""
+
+    def __init__(self, *args, **kwargs):
+        super(XmlBodyMiddlewareV3, self).__init__(*args, **kwargs)
+        self.xmlns = 'http://docs.openstack.org/identity/api/v3'
 
 
 class NormalizingFilter(wsgi.Middleware):
@@ -193,7 +218,7 @@ class RequestBodySizeLimiter(wsgi.Middleware):
     def __init__(self, *args, **kwargs):
         super(RequestBodySizeLimiter, self).__init__(*args, **kwargs)
 
-    @webob.dec.wsgify(RequestClass=wsgi.Request)
+    @webob.dec.wsgify()
     def __call__(self, req):
 
         if req.content_length > CONF.max_request_body_size:
@@ -224,6 +249,14 @@ class AuthContextMiddleware(wsgi.Middleware):
 
         try:
             token_ref = self.token_api.get_token(token_id)
+            # TODO(ayoung): These two functions return the token in different
+            # formats instead of two calls, only make one.  However, the call
+            # to get_token hits the caching layer, and does not validate the
+            # token.  In the future, this should be reduced to one call.
+            if not CONF.token.revoke_by_id:
+                self.token_api.token_provider_api.validate_token(
+                    context['token_id'])
+
             # TODO(gyee): validate_token_bind should really be its own
             # middleware
             wsgi.validate_token_bind(context, token_ref)

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -15,9 +13,7 @@
 # under the License.
 
 from keystone.common import sql
-from keystone.common.sql import migration
 from keystone import exception
-from keystone.openstack.common.db.sqlalchemy import session as db_session
 from keystone.policy.backends import rules
 
 
@@ -30,14 +26,11 @@ class PolicyModel(sql.ModelBase, sql.DictBase):
     extra = sql.Column(sql.JsonBlob())
 
 
-class Policy(sql.Base, rules.Policy):
-    # Internal interface to manage the database
-    def db_sync(self, version=None):
-        migration.db_sync(version=version)
+class Policy(rules.Policy):
 
     @sql.handle_conflicts(conflict_type='policy')
     def create_policy(self, policy_id, policy):
-        session = db_session.get_session()
+        session = sql.get_session()
 
         with session.begin():
             ref = PolicyModel.from_dict(policy)
@@ -46,7 +39,7 @@ class Policy(sql.Base, rules.Policy):
         return ref.to_dict()
 
     def list_policies(self):
-        session = db_session.get_session()
+        session = sql.get_session()
 
         refs = session.query(PolicyModel).all()
         return [ref.to_dict() for ref in refs]
@@ -59,13 +52,13 @@ class Policy(sql.Base, rules.Policy):
         return ref
 
     def get_policy(self, policy_id):
-        session = db_session.get_session()
+        session = sql.get_session()
 
         return self._get_policy(session, policy_id).to_dict()
 
     @sql.handle_conflicts(conflict_type='policy')
     def update_policy(self, policy_id, policy):
-        session = db_session.get_session()
+        session = sql.get_session()
 
         with session.begin():
             ref = self._get_policy(session, policy_id)
@@ -79,7 +72,7 @@ class Policy(sql.Base, rules.Policy):
         return ref.to_dict()
 
     def delete_policy(self, policy_id):
-        session = db_session.get_session()
+        session = sql.get_session()
 
         with session.begin():
             ref = self._get_policy(session, policy_id)

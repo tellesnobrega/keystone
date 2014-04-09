@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -20,11 +18,11 @@ import os
 from paste import deploy
 
 from keystone.openstack.common import gettextutils
-
-# NOTE(blk-u):
-# gettextutils.install() must run to set _ before importing any modules that
-# contain static translated strings.
-gettextutils.install('keystone', lazy=True)
+# NOTE(dstanek): gettextutils.enable_lazy() must be called before
+# gettextutils._() is called to ensure it has the desired lazy lookup
+# behavior. This includes cases, like keystone.exceptions, where
+# gettextutils._() is called at import time.
+gettextutils.enable_lazy()
 
 from keystone.common import dependency
 from keystone.common import environment
@@ -38,6 +36,7 @@ CONF = config.CONF
 
 config.configure()
 sql.initialize()
+config.set_default_for_default_log_levels()
 
 CONF(project='keystone')
 config.setup_logging()

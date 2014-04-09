@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -30,6 +28,7 @@ from keystone.common import extension
 from keystone.common import manager
 from keystone import config
 from keystone import exception
+from keystone import notifications
 
 
 RequestValidator = oauth1.RequestValidator
@@ -107,17 +106,6 @@ def filter_token(access_token_ref):
     return access_token_ref
 
 
-def rebuild_url(path):
-    endpoint = CONF.public_endpoint % CONF
-
-    # allow a missing trailing slash in the config
-    if endpoint[-1] != '/':
-        endpoint += '/'
-
-    url = endpoint + 'v3'
-    return url + path
-
-
 def get_oauth_headers(headers):
     parameters = {}
 
@@ -150,9 +138,39 @@ class Manager(manager.Manager):
     dynamically calls the backend.
 
     """
+    _ACCESS_TOKEN = "OS-OAUTH1:access_token"
+    _REQUEST_TOKEN = "OS-OAUTH1:request_token"
+    _CONSUMER = "OS-OAUTH1:consumer"
 
     def __init__(self):
         super(Manager, self).__init__(CONF.oauth1.driver)
+
+    @notifications.created(_CONSUMER)
+    def create_consumer(self, consumer_ref):
+        return self.driver.create_consumer(consumer_ref)
+
+    @notifications.updated(_CONSUMER)
+    def update_consumer(self, consumer_id, consumer_ref):
+        return self.driver.update_consumer(consumer_id, consumer_ref)
+
+    @notifications.deleted(_CONSUMER)
+    def delete_consumer(self, consumer_id):
+        return self.driver.delete_consumer(consumer_id)
+
+    @notifications.created(_ACCESS_TOKEN)
+    def create_access_token(self, request_id, access_token_duration):
+        return self.driver.create_access_token(request_id,
+                                               access_token_duration)
+
+    @notifications.deleted(_ACCESS_TOKEN, resource_id_arg_index=2)
+    def delete_access_token(self, user_id, access_token_id):
+        return self.driver.delete_access_token(user_id, access_token_id)
+
+    @notifications.created(_REQUEST_TOKEN, resource_id_arg_index=2)
+    def create_request_token(self, consumer_id, requested_project,
+                             request_token_duration):
+        return self.driver.create_request_token(
+            consumer_id, requested_project, request_token_duration)
 
 
 @six.add_metaclass(abc.ABCMeta)

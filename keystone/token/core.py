@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -20,14 +18,15 @@ import abc
 import copy
 import datetime
 
+from keystoneclient.common import cms
 import six
 
 from keystone.common import cache
-from keystone.common import cms
 from keystone.common import dependency
 from keystone.common import manager
 from keystone import config
 from keystone import exception
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
 from keystone.openstack.common import timeutils
 from keystone.openstack.common import versionutils
@@ -166,6 +165,8 @@ class Manager(manager.Manager):
         return ret
 
     def delete_token(self, token_id):
+        if not CONF.token.revoke_by_id:
+            return
         unique_id = self.unique_id(token_id)
         self.driver.delete_token(unique_id)
         self._invalidate_individual_token_cache(unique_id)
@@ -173,6 +174,8 @@ class Manager(manager.Manager):
 
     def delete_tokens(self, user_id, tenant_id=None, trust_id=None,
                       consumer_id=None):
+        if not CONF.token.revoke_by_id:
+            return
         token_list = self.driver._list_tokens(user_id, tenant_id, trust_id,
                                               consumer_id)
         self.driver.delete_tokens(user_id, tenant_id, trust_id, consumer_id)
@@ -194,6 +197,8 @@ class Manager(manager.Manager):
 
     def delete_tokens_for_domain(self, domain_id):
         """Delete all tokens for a given domain."""
+        if not CONF.token.revoke_by_id:
+            return
         projects = self.assignment_api.list_projects()
         for project in projects:
             if project['domain_id'] == domain_id:
@@ -209,6 +214,8 @@ class Manager(manager.Manager):
         revocations in a single call instead of needing to explicitly handle
         trusts in the caller's logic.
         """
+        if not CONF.token.revoke_by_id:
+            return
         self.delete_tokens(user_id, tenant_id=project_id)
         for trust in self.trust_api.list_trusts_for_trustee(user_id):
             # Ensure we revoke tokens associated to the trust / project
@@ -236,6 +243,8 @@ class Manager(manager.Manager):
         :param user_ids: list of user identifiers
         :param project_id: optional project identifier
         """
+        if not CONF.token.revoke_by_id:
+            return
         for user_id in user_ids:
             self.delete_tokens_for_user(user_id, project_id=project_id)
 
@@ -355,6 +364,8 @@ class Driver(object):
         :raises: keystone.exception.TokenNotFound
 
         """
+        if not CONF.token.revoke_by_id:
+            return
         token_list = self._list_tokens(user_id,
                                        tenant_id=tenant_id,
                                        trust_id=trust_id,

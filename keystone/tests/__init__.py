@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,4 +12,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from keystone.tests.core import *  # flake8: noqa
+# NOTE(dstanek): gettextutils.enable_lazy() must be called before
+# gettextutils._() is called to ensure it has the desired lazy lookup
+# behavior. This includes cases, like keystone.exceptions, where
+# gettextutils._() is called at import time.
+from keystone.openstack.common import gettextutils as _gettextutils
+
+_gettextutils.enable_lazy()
+
+from keystone.tests.core import *  # noqa

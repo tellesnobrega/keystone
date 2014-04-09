@@ -243,7 +243,7 @@ behavior is that subsystem caching is enabled, but the global toggle is set to d
 
 * ``enabled`` - enables/disables caching across all of keystone
 * ``debug_cache_backend`` - enables more in-depth logging from the cache backend (get, set, delete, etc)
-* ``backend`` - the caching backend module to use e.g. ``dogpile.cache.memcache``
+* ``backend`` - the caching backend module to use e.g. ``dogpile.cache.memcached``
 
     .. NOTE::
         A given ``backend`` must be registered with ``dogpile.cache`` before it
@@ -257,6 +257,7 @@ behavior is that subsystem caching is enabled, but the global toggle is set to d
     * ``dogpile.cache.redis`` - `Redis`_ backend
     * ``dogpile.cache.dbm`` - local DBM file backend
     * ``dogpile.cache.memory`` - in-memory cache
+    * ``keystone.cache.mongo`` - MongoDB as caching backend
 
         .. WARNING::
             ``dogpile.cache.memory`` is not suitable for use outside of unit testing
@@ -320,6 +321,7 @@ For more information about the different backends (and configuration options):
     * `dogpile.cache.backends.memcached`_
     * `dogpile.cache.backends.redis`_
     * `dogpile.cache.backends.file`_
+    * :mod:`keystone.common.cache.backends.mongo`
 
 .. _`dogpile.cache`: http://dogpilecache.readthedocs.org/en/latest/
 .. _`python-memcached`: http://www.tummy.com/software/python-memcached/
@@ -331,6 +333,7 @@ For more information about the different backends (and configuration options):
 .. _`dogpile.cache.backends.redis`: http://dogpilecache.readthedocs.org/en/latest/api.html#redis-backends
 .. _`dogpile.cache.backends.file`: http://dogpilecache.readthedocs.org/en/latest/api.html#file-backends
 .. _`ProxyBackends`: http://dogpilecache.readthedocs.org/en/latest/api.html#proxy-backends
+.. _`PyMongo API`: http://api.mongodb.org/python/current/api/pymongo/index.html
 
 
 Certificates for PKI
@@ -693,6 +696,22 @@ should be set to one of the following modes:
   *Do not* set ``enforce_token_bind = named`` as there is not an authentication
   mechanism called ``named``.
 
+Limiting the number of entities returned in a collection
+--------------------------------------------------------
+
+Keystone provides a method of setting a limit to the number of entities
+returned in a collection, which is useful to prevent overly long response times
+for list queries that have not specified a sufficiently narrow filter. This
+limit can be set globally by setting ``list_limit`` in the default section of
+``keystone.conf``, with no limit set by default.  Individual driver sections
+may override this global value with a specific limit, for example::
+
+    [assignment]
+    list_limit = 100
+
+If a response to ``list_{entity}`` call has been truncated, then the response
+status code will still be 200 (OK), but the ``truncated`` attribute in the
+collection will be set to ``true``.
 
 Sample Configuration Files
 --------------------------
@@ -704,6 +723,110 @@ files for each Server application.
 * ``etc/keystone-paste.ini``
 * ``etc/logging.conf.sample``
 * ``etc/default_catalog.templates``
+
+.. _`API protection with RBAC`:
+
+Keystone API protection with Role Based Access Control (RBAC)
+=============================================================
+
+Like most OpenStack projects, Keystone supports the protection of its APIs
+by defining policy rules based on an RBAC approach.  These are stored in a
+JSON policy file, the name and location of which is set in the main Keystone
+configuration file.
+
+Each keystone v3 API has a line in the policy file which dictates what level
+of protection is applied to it, where each line is of the form:
+
+<api name>: <rule statement> or <match statement>
+
+where
+
+<rule statement> can be contain <rule statement> or <match statement>
+
+<match statement> is a set of identifiers that must match between the token
+provided by the caller of the API and the parameters or target entities of
+the API call in question. For example:
+
+    "identity:create_user": [["role:admin", "domain_id:%(user.domain_id)s"]]
+
+indicates that to create a user you must have the admin role in your token and
+in addition the domain_id in your token (which implies this must be a domain
+scoped token) must match the domain_id in the user object you are trying to
+create.  In other words, you must have the admin role on the domain in which
+you are creating the user, and the token you are using must be scoped to that
+domain.
+
+Each component of a match statement is of the form:
+
+<attribute from token>:<constant> or <attribute related to API call>
+
+The following attributes are available
+
+* Attributes from token: user_id, the domain_id or project_id depending on
+  the scope, and the list of roles you have within that scope
+
+* Attributes related to API call: Any parameters that are passed into the
+  API call are available, along with any filters specified in the query
+  string. Attributes of objects passed can be refererenced using an
+  object.attribute syntax (e.g. user.domain_id). The target objects of an
+  API are also available using a target.object.attribute syntax.  For instance:
+
+    "identity:delete_user": [["role:admin", "domain_id:%(target.user.domain_id)s"]]
+
+  would ensure that the user object that is being deleted is in the same
+  domain as the token provided.
+
+Every target object has an `id` and a `name` available as
+`target.<object>.id` and `target.<object>.name`. Other attributes are
+retrieved from the database and vary between object types. Moreover,
+some database fields are filtered out (e.g. user passwords).
+
+List of object attributes:
+
+* role:
+    * target.role.id
+    * target.role.name
+
+* user:
+    * target.user.default_project_id
+    * target.user.description
+    * target.user.domain_id
+    * target.user.enabled
+    * target.user.id
+    * target.user.name
+
+* group:
+    * target.group.description
+    * target.group.domain_id
+    * target.group.id
+    * target.group.name
+
+* domain:
+    * target.domain.enabled
+    * target.domain.id
+    * target.domain.name
+
+* project:
+    * target.project.description
+    * target.project.domain_id
+    * target.project.enabled
+    * target.project.id
+    * target.project.name
+
+The default policy.json file supplied provides a somewhat basic example of
+API protection, and does not assume any particular use of domains. For
+multi-domain configuration installations where, for example, a cloud
+provider wishes to allow adminsistration of the contents of a domain to
+be delegated, it is recommended that the supplied policy.v3cloudsample.json
+is used as a basis for creating a suitable production policy file. This
+example policy file also shows the use of an admin_domain to allow a cloud
+provider to enable cloud adminstrators to have wider access across the APIs.
+
+A clean installation would need to perhaps start with the standard policy
+file, to allow creation of the admin_domain with the first users within
+it. The domain_id of the admin domain would then be obtained and could be
+pasted into a modifed version of policy.v3cloudsample.json which could then
+be enabled as the main policy file.
 
 .. _`adding extensions`:
 
@@ -732,6 +855,14 @@ Federation
    :maxdepth: 1
 
    extensions/federation-configuration.rst
+
+Revocation Events
+------------------
+
+.. toctree::
+   :maxdepth: 1
+
+   extensions/revoke-configuration.rst
 
 .. _`prepare your deployment`:
 
@@ -850,71 +981,6 @@ to be passed as arguments each time::
     $ export OS_USERNAME=my_username
     $ export OS_PASSWORD=my_password
     $ export OS_TENANT_NAME=my_tenant
-
-Keystone API protection with Role Based Access Control (RBAC)
--------------------------------------------------------------
-
-Like most OpenStack projects, Keystone supports the protection of its APIs
-by defining policy rules based on an RBAC approach.  These are stored in a
-JSON policy file, the name and location of which is set in the main Keystone
-configuration file.
-
-Each keystone v3 API has a line in the policy file which dictates what level
-of protection is applied to it, where each line is of the form:
-
-<api name>: <rule statement> or <match statement>
-
-where
-
-<rule statement> can be contain <rule statement> or <match statement>
-
-<match statement> is a set of identifiers that must match between the token
-provided by the caller of the API and the parameters or target entities of
-the API call in question. For example:
-
-    "identity:create_user": [["role:admin", "domain_id:%(user.domain_id)s"]]
-
-indicates that to create a user you must have the admin role in your token and
-in addition the domain_id in your token (which implies this must be a domain
-scoped token) must match the domain_id in the user object you are trying to
-create.  In other words, you must have the admin role on the domain in which
-you are creating the user, and the token you are using must be scoped to that
-domain.
-
-Each component of a match statement is of the form:
-
-<attribute from token>:<constant> or <attribute related to API call>
-
-The following attributes are available
-
-* Attributes from token: user_id, the domain_id or project_id depending on
-  the scope, and the list of roles you have within that scope
-
-* Attributes related to API call: Any parameters that are passed into the
-  API call are available, along with any filters specified in the query
-  string. Attributes of objects passed can be refererenced using an
-  object.attribute syntax (e.g. user.domain_id). The target objects of an
-  API are also available using a target.object.attribute syntax.  For instance:
-
-    "identity:delete_user": [["role:admin", "domain_id:%(target.user.domain_id)s"]]
-
-  would ensure that the user object that is being deleted is in the same
-  domain as the token provided.
-
-The default policy.json file supplied provides a somewhat basic example of
-API protection, and does not assume any particular use of domains. For
-multi-domain configuration installations where, for example, a cloud
-provider wishes to allow adminsistration of the contents of a domain to
-be delegated, it is recommended that the supplied policy.v3cloudsample.json
-is used as a basis for creating a suitable production policy file. This
-example policy file also shows the use of an admin_domain to allow a cloud
-provider to enable cloud adminstrators to have wider access across the APIs.
-
-A clean installation would need to perhaps start with the standard policy
-file, to allow creation of the admin_domain with the first users within
-it. The domain_id of the admin domain would then be obtained and could be
-pasted into a modifed version of policy.v3cloudsample.json which could then
-be enabled as the main policy file.
 
 Example usage
 -------------
@@ -1331,6 +1397,31 @@ specified classes in the LDAP module so you can configure them like::
   role_name_attribute      = ou
   role_member_attribute    = roleOccupant
   role_attribute_ignore    =
+
+
+Enabled Emulation
+-----------------
+
+Some directory servers do not provide any enabled attribute. For these
+servers, the ``user_enabled_emulation`` and ``tenant_enabled_emulation``
+attributes have been created. They are enabled by setting their respective
+flags to True. Then the attributes ``user_enabled_emulation_dn`` and
+``tenant_enabled_emulation_dn`` may be set to specify how the enabled users
+and projects (tenants) are selected.  These attributes work by using a
+``groupOfNames`` and adding whichever users or projects (tenants) that
+you want enabled to the respective group. For example, this will
+mark any user who is a member of ``enabled_users`` as enabled::
+
+  [ldap]
+  user_enabled_emulation = True
+  user_enabled_emulation_dn = cn=enabled_users,cn=groups,dc=openstack,dc=org
+
+The default values for user and project (tenant) enabled emulation DN is
+``cn=enabled_users,$user_tree_dn`` and ``cn=enabled_tenants,$tenant_tree_dn``
+respectively.
+
+Secure Connection
+-----------------
 
 If you are using a directory server to provide the Identity service,
 it is strongly recommended that you utilize a secure connection from

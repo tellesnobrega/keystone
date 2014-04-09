@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,19 +12,25 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import copy
 import datetime
+import os
+import shutil
 import uuid
 
 from lxml import etree
 import six
+from testtools import matchers
 
 from keystone import auth
 from keystone.common import authorization
 from keystone.common import cache
 from keystone.common import serializer
+from keystone.common import sql
+from keystone.common.sql import migration_helpers
 from keystone import config
+from keystone import exception
 from keystone import middleware
+from keystone.openstack.common.db.sqlalchemy import migration
 from keystone.openstack.common import timeutils
 from keystone.policy.backends import rules
 from keystone import tests
@@ -39,23 +43,44 @@ DEFAULT_DOMAIN_ID = 'default'
 TIME_FORMAT = '%Y-%m-%dT%H:%M:%S.%fZ'
 
 
-class RestfulTestCase(rest.RestfulTestCase):
-    _config_file_list = [tests.dirs.etc('keystone.conf.sample'),
-                         tests.dirs.tests('test_overrides.conf'),
-                         tests.dirs.tests('backend_sql.conf'),
-                         tests.dirs.tests('backend_sql_disk.conf')]
+def _setup_database(extensions=None):
+    if CONF.database.connection != tests.IN_MEM_DB_CONN_STRING:
+        db = tests.dirs.tmp('test.db')
+        pristine = tests.dirs.tmp('test.db.pristine')
 
-    #Subclasses can override this to specify the complete list of configuration
-    #files.  The base version makes a copy of the original values, otherwise
-    #additional tests end up appending to them and corrupting other tests.
+        if os.path.exists(db):
+            os.unlink(db)
+        if not os.path.exists(pristine):
+            migration.db_sync(sql.get_engine(),
+                              migration_helpers.find_migrate_repo())
+            for extension in (extensions or []):
+                migration_helpers.sync_database_to_version(extension=extension)
+            shutil.copyfile(db, pristine)
+        else:
+            shutil.copyfile(pristine, db)
+
+
+def _teardown_database():
+    sql.cleanup()
+
+
+class RestfulTestCase(tests.SQLDriverOverrides, rest.RestfulTestCase):
     def config_files(self):
-        return copy.copy(self._config_file_list)
+        config_files = super(RestfulTestCase, self).config_files()
+        config_files.append(tests.dirs.tests_conf('backend_sql.conf'))
+        return config_files
+
+    def get_extensions(self):
+        extensions = set(['revoke'])
+        if hasattr(self, 'EXTENSION_NAME'):
+            extensions.add(self.EXTENSION_NAME)
+        return extensions
 
     def setup_database(self):
-        tests.setup_database()
+        _setup_database(self.get_extensions())
 
     def teardown_database(self):
-        tests.teardown_database()
+        _teardown_database()
 
     def generate_paste_config(self):
         new_paste_file = None
@@ -87,14 +112,12 @@ class RestfulTestCase(rest.RestfulTestCase):
 
         self.empty_context = {'environment': {}}
 
-        #drop the policy rules
+        # drop the policy rules
         self.addCleanup(rules.reset)
 
         self.addCleanup(self.teardown_database)
 
     def load_backends(self):
-        self.config(self.config_files())
-
         self.setup_database()
 
         # ensure the cache region instance is setup
@@ -105,7 +128,25 @@ class RestfulTestCase(rest.RestfulTestCase):
     def load_fixtures(self, fixtures):
         self.load_sample_data()
 
+    def _populate_default_domain(self):
+        if CONF.database.connection == tests.IN_MEM_DB_CONN_STRING:
+            # NOTE(morganfainberg): If an in-memory db is being used, be sure
+            # to populate the default domain, this is typically done by
+            # a migration, but the in-mem db uses model definitions  to create
+            # the schema (no migrations are run).
+            try:
+                self.assignment_api.get_domain(DEFAULT_DOMAIN_ID)
+            except exception.DomainNotFound:
+                domain = {'description': (u'Owns users and tenants (i.e. '
+                                          u'projects) available on Identity '
+                                          u'API v2.'),
+                          'enabled': True,
+                          'id': DEFAULT_DOMAIN_ID,
+                          'name': u'Default'}
+                self.assignment_api.create_domain(DEFAULT_DOMAIN_ID, domain)
+
     def load_sample_data(self):
+        self._populate_default_domain()
         self.domain_id = uuid.uuid4().hex
         self.domain = self.new_domain_ref()
         self.domain['id'] = self.domain_id
@@ -155,7 +196,6 @@ class RestfulTestCase(rest.RestfulTestCase):
         self.region = self.new_region_ref()
         self.region['id'] = self.region_id
         self.catalog_api.create_region(
-            self.region_id,
             self.region.copy())
 
         self.service_id = uuid.uuid4().hex
@@ -171,6 +211,8 @@ class RestfulTestCase(rest.RestfulTestCase):
         self.catalog_api.create_endpoint(
             self.endpoint_id,
             self.endpoint.copy())
+        # The server adds 'enabled' and defaults to True.
+        self.endpoint['enabled'] = True
 
     def new_ref(self):
         """Populates a ref with attributes common to all API entities."""
@@ -193,12 +235,14 @@ class RestfulTestCase(rest.RestfulTestCase):
         ref['type'] = uuid.uuid4().hex
         return ref
 
-    def new_endpoint_ref(self, service_id):
+    def new_endpoint_ref(self, service_id, **kwargs):
         ref = self.new_ref()
+        del ref['enabled']  # enabled is optional
         ref['interface'] = uuid.uuid4().hex[:8]
         ref['service_id'] = service_id
         ref['url'] = uuid.uuid4().hex
         ref['region'] = uuid.uuid4().hex
+        ref.update(kwargs)
         return ref
 
     def new_domain_ref(self):
@@ -245,13 +289,14 @@ class RestfulTestCase(rest.RestfulTestCase):
 
     def new_trust_ref(self, trustor_user_id, trustee_user_id, project_id=None,
                       impersonation=None, expires=None, role_ids=None,
-                      role_names=None):
+                      role_names=None, remaining_uses=None):
         ref = self.new_ref()
 
         ref['trustor_user_id'] = trustor_user_id
         ref['trustee_user_id'] = trustee_user_id
         ref['impersonation'] = impersonation or False
         ref['project_id'] = project_id
+        ref['remaining_uses'] = remaining_uses
 
         if isinstance(expires, six.string_types):
             ref['expires_at'] = expires
@@ -402,19 +447,17 @@ class RestfulTestCase(rest.RestfulTestCase):
     def assertValidListLinks(self, links):
         self.assertIsNotNone(links)
         self.assertIsNotNone(links.get('self'))
-        self.assertIn(CONF.public_endpoint % CONF, links['self'])
+        self.assertThat(links['self'], matchers.StartsWith('http://localhost'))
 
         self.assertIn('next', links)
         if links['next'] is not None:
-            self.assertIn(
-                CONF.public_endpoint % CONF,
-                links['next'])
+            self.assertThat(links['next'],
+                            matchers.StartsWith('http://localhost'))
 
         self.assertIn('previous', links)
         if links['previous'] is not None:
-            self.assertIn(
-                CONF.public_endpoint % CONF,
-                links['previous'])
+            self.assertThat(links['previous'],
+                            matchers.StartsWith('http://localhost'))
 
     def assertValidListResponse(self, resp, key, entity_validator, ref=None,
                                 expected_length=None, keys_to_check=None):
@@ -474,7 +517,8 @@ class RestfulTestCase(rest.RestfulTestCase):
 
         self.assertIsNotNone(entity.get('links'))
         self.assertIsNotNone(entity['links'].get('self'))
-        self.assertIn(CONF.public_endpoint % CONF, entity['links']['self'])
+        self.assertThat(entity['links']['self'],
+                        matchers.StartsWith('http://localhost'))
         self.assertIn(entity['id'], entity['links']['self'])
 
         if ref:
@@ -492,7 +536,7 @@ class RestfulTestCase(rest.RestfulTestCase):
         except Exception:
             msg = '%s is not a valid ISO 8601 extended format date time.' % dt
             raise AssertionError(msg)
-        self.assertTrue(isinstance(dt, datetime.datetime))
+        self.assertIsInstance(dt, datetime.datetime)
 
     def assertValidTokenResponse(self, r, user=None):
         self.assertTrue(r.headers.get('X-Subject-Token'))
@@ -537,6 +581,15 @@ class RestfulTestCase(rest.RestfulTestCase):
 
         if require_catalog:
             self.assertIn('catalog', token)
+
+            if isinstance(token['catalog'], list):
+                # only test JSON
+                for service in token['catalog']:
+                    for endpoint in service['endpoints']:
+                        self.assertNotIn('enabled', endpoint)
+                        self.assertNotIn('legacy_endpoint_id', endpoint)
+                        self.assertNotIn('service_id', endpoint)
+
             # sub test for the OS-EP-FILTER extension enabled
             if endpoint_filter:
                 # verify the catalog hs no more than the endpoints
@@ -573,7 +626,7 @@ class RestfulTestCase(rest.RestfulTestCase):
         trust = token.get('OS-TRUST:trust')
         self.assertIsNotNone(trust)
         self.assertIsNotNone(trust.get('id'))
-        self.assertTrue(isinstance(trust.get('impersonation'), bool))
+        self.assertIsInstance(trust.get('impersonation'), bool)
         self.assertIsNotNone(trust.get('trustor_user'))
         self.assertIsNotNone(trust.get('trustee_user'))
         self.assertIsNotNone(trust['trustor_user'].get('id'))
@@ -616,14 +669,14 @@ class RestfulTestCase(rest.RestfulTestCase):
     # region validation
 
     def assertValidRegionListResponse(self, resp, *args, **kwargs):
-        #NOTE(jaypipes): I have to pass in a blank keys_to_check parameter
-        #                below otherwise the base assertValidEntity method
-        #                tries to find a "name" and an "enabled" key in the
-        #                returned ref dicts. The issue is, I don't understand
-        #                how the service and endpoint entity assertions below
-        #                actually work (they don't raise assertions), since
-        #                AFAICT, the service and endpoint tables don't have
-        #                a "name" column either... :(
+        # NOTE(jaypipes): I have to pass in a blank keys_to_check parameter
+        #                 below otherwise the base assertValidEntity method
+        #                 tries to find a "name" and an "enabled" key in the
+        #                 returned ref dicts. The issue is, I don't understand
+        #                 how the service and endpoint entity assertions below
+        #                 actually work (they don't raise assertions), since
+        #                 AFAICT, the service and endpoint tables don't have
+        #                 a "name" column either... :(
         return self.assertValidListResponse(
             resp,
             'regions',
@@ -667,6 +720,7 @@ class RestfulTestCase(rest.RestfulTestCase):
 
     def assertValidService(self, entity, ref=None):
         self.assertIsNotNone(entity.get('type'))
+        self.assertIsInstance(entity.get('enabled'), bool)
         if ref:
             self.assertEqual(ref['type'], entity['type'])
         return entity
@@ -692,6 +746,7 @@ class RestfulTestCase(rest.RestfulTestCase):
     def assertValidEndpoint(self, entity, ref=None):
         self.assertIsNotNone(entity.get('interface'))
         self.assertIsNotNone(entity.get('service_id'))
+        self.assertIsInstance(entity['enabled'], bool)
 
         # this is intended to be an unexposed implementation detail
         self.assertNotIn('legacy_endpoint_id', entity)
@@ -990,6 +1045,7 @@ class RestfulTestCase(rest.RestfulTestCase):
     def assertValidTrust(self, entity, ref=None, summary=False):
         self.assertIsNotNone(entity.get('trustor_user_id'))
         self.assertIsNotNone(entity.get('trustee_user_id'))
+        self.assertIsNotNone(entity.get('impersonation'))
 
         self.assertIn('expires_at', entity)
         if entity['expires_at'] is not None:
@@ -1117,7 +1173,7 @@ class VersionTestCase(RestfulTestCase):
         pass
 
 
-#NOTE(gyee): test AuthContextMiddleware here instead of test_middleware.py
+# NOTE(gyee): test AuthContextMiddleware here instead of test_middleware.py
 # because we need the token
 class AuthContextMiddlewareTestCase(RestfulTestCase):
     def _mock_request_object(self, token_id):

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2011 Piston Cloud Computing, Inc.
 # All Rights Reserved.
 
@@ -18,13 +16,13 @@
 import json
 import tempfile
 
+import mock
 import six
 from six.moves.urllib import request as urlrequest
 from testtools import matchers
 
 from keystone import config
 from keystone import exception
-from keystone.openstack.common.fixture import moxstubout
 from keystone.openstack.common import policy as common_policy
 from keystone.policy.backends import rules
 from keystone import tests
@@ -35,13 +33,19 @@ CONF = config.CONF
 
 class PolicyFileTestCase(tests.TestCase):
     def setUp(self):
+        # self.tmpfilename should exist before setUp super is called
+        # this is to ensure it is available for the config_fixture in
+        # the config_overrides call.
+        _unused, self.tmpfilename = tempfile.mkstemp()
         super(PolicyFileTestCase, self).setUp()
 
         rules.reset()
         self.addCleanup(rules.reset)
-        _unused, self.tmpfilename = tempfile.mkstemp()
-        self.opt(policy_file=self.tmpfilename)
         self.target = {}
+
+    def config_overrides(self):
+        super(PolicyFileTestCase, self).config_overrides()
+        self.config_fixture.config(policy_file=self.tmpfilename)
 
     def test_modified_policy_reloads(self):
         action = "example:test"
@@ -82,9 +86,6 @@ class PolicyTestCase(tests.TestCase):
         self.credentials = {}
         self.target = {}
 
-        fixture = self.useFixture(moxstubout.MoxStubout())
-        self.stubs = fixture.stubs
-
     def _set_rules(self):
         these_rules = common_policy.Rules(
             dict((k, common_policy.parse_rule(v))
@@ -110,21 +111,22 @@ class PolicyTestCase(tests.TestCase):
         def fakeurlopen(url, post_data):
             return six.StringIO("True")
 
-        self.stubs.Set(urlrequest, 'urlopen', fakeurlopen)
         action = "example:get_http"
         target = {}
-        result = rules.enforce(self.credentials, action, target)
+        with mock.patch.object(urlrequest, 'urlopen', fakeurlopen):
+            result = rules.enforce(self.credentials, action, target)
         self.assertTrue(result)
 
     def test_enforce_http_false(self):
 
         def fakeurlopen(url, post_data):
             return six.StringIO("False")
-        self.stubs.Set(urlrequest, 'urlopen', fakeurlopen)
+
         action = "example:get_http"
         target = {}
-        self.assertRaises(exception.ForbiddenAction, rules.enforce,
-                          self.credentials, action, target)
+        with mock.patch.object(urlrequest, 'urlopen', fakeurlopen):
+            self.assertRaises(exception.ForbiddenAction, rules.enforce,
+                              self.credentials, action, target)
 
     def test_templatized_enforcement(self):
         target_mine = {'project_id': 'fake'}

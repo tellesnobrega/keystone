@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 Red Hat, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -44,6 +42,8 @@ import string
 
 import six
 from six.moves import urllib
+
+from keystone.openstack.common.gettextutils import _
 
 
 class InvalidBase64Error(ValueError):

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 Red Hat, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -95,10 +93,12 @@ and consumption of PEM formatted data including:
 """
 
 import base64
-from keystone.common import base64utils
 import re
 
 import six
+
+from keystone.common import base64utils
+from keystone.openstack.common.gettextutils import _
 
 
 PEM_TYPE_TO_HEADER = {
@@ -250,8 +250,6 @@ class PEMParseResult(object):
             self._pem_type = pem_type
             self._pem_header = pem_header
 
-#------------------------------------------------------------------------------
-
 
 def pem_search(text, start=0):
     """Search for a block of PEM formatted data
@@ -392,7 +390,7 @@ def parse_pem(text, pem_type=None, max_items=None):
                   '%(position)d: %(err_msg)s') %
                 {'pem_type': block.pem_type,
                  'position': block.pem_start,
-                 'err_msg': str(e)})
+                 'err_msg': six.text_type(e)})
         else:
             block.binary_data = binary_data
 

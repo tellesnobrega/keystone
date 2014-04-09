@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,16 +12,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import datetime
 import json
 
+from keystoneclient.common import cms
 import six
 
-from keystone.common import cms
 from keystone.common import controller
 from keystone.common import dependency
 from keystone.common import wsgi
 from keystone import config
 from keystone import exception
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
 from keystone.openstack.common import timeutils
 from keystone.token import core
@@ -82,8 +82,6 @@ class Auth(controller.V2Controller):
         if auth is None:
             raise exception.ValidationError(attribute='auth',
                                             target='request body')
-
-        auth_token_data = None
 
         if "token" in auth:
             # Try to authenticate using a token
@@ -158,7 +156,7 @@ class Auth(controller.V2Controller):
 
         wsgi.validate_token_bind(context, old_token_ref)
 
-        #A trust token cannot be used to get another token
+        # A trust token cannot be used to get another token
         if 'trust' in old_token_ref:
             raise exception.Forbidden()
         if 'trust_id' in old_token_ref['metadata']:
@@ -187,6 +185,8 @@ class Auth(controller.V2Controller):
                 trust_ref['trustee_user_id'])
             if not trustee_user_ref['enabled']:
                 raise exception.Forbidden()()
+            self.trust_api.consume_use(auth['trust_id'])
+
             if trust_ref['impersonation'] is True:
                 current_user_ref = trustor_user_ref
             else:
@@ -219,7 +219,7 @@ class Auth(controller.V2Controller):
             metadata_ref['trustee_user_id'] = trust_ref['trustee_user_id']
             metadata_ref['trust_id'] = trust_id
 
-        bind = old_token_ref.get('bind', None)
+        bind = old_token_ref.get('bind')
 
         return (current_user_ref, tenant_ref, metadata_ref, expiry, bind)
 
@@ -247,7 +247,7 @@ class Auth(controller.V2Controller):
                 attribute='username or userId',
                 target='passwordCredentials')
 
-        user_id = auth['passwordCredentials'].get('userId', None)
+        user_id = auth['passwordCredentials'].get('userId')
         if user_id and len(user_id) > CONF.max_param_size:
             raise exception.ValidationSizeError(attribute='userId',
                                                 size=CONF.max_param_size)
@@ -267,10 +267,11 @@ class Auth(controller.V2Controller):
 
         try:
             user_ref = self.identity_api.authenticate(
+                context,
                 user_id=user_id,
                 password=password)
         except AssertionError as e:
-            raise exception.Unauthorized(e)
+            raise exception.Unauthorized(e.args[0])
 
         metadata_ref = {}
         tenant_id = self._get_project_id_from_auth(auth)
@@ -288,7 +289,7 @@ class Auth(controller.V2Controller):
         if 'REMOTE_USER' not in context.get('environment', {}):
             raise ExternalAuthNotApplicable()
 
-        #NOTE(jamielennox): xml and json differ and get confused about what
+        # NOTE(jamielennox): xml and json differ and get confused about what
         # empty auth should look like so just reset it.
         if not auth:
             auth = {}
@@ -326,12 +327,12 @@ class Auth(controller.V2Controller):
 
         Returns a valid tenant_id if it exists, or None if not specified.
         """
-        tenant_id = auth.get('tenantId', None)
+        tenant_id = auth.get('tenantId')
         if tenant_id and len(tenant_id) > CONF.max_param_size:
             raise exception.ValidationSizeError(attribute='tenantId',
                                                 size=CONF.max_param_size)
 
-        tenant_name = auth.get('tenantName', None)
+        tenant_name = auth.get('tenantName')
         if tenant_name and len(tenant_name) > CONF.max_param_size:
             raise exception.ValidationSizeError(attribute='tenantName',
                                                 size=CONF.max_param_size)
@@ -344,25 +345,6 @@ class Auth(controller.V2Controller):
             except exception.ProjectNotFound as e:
                 raise exception.Unauthorized(e)
         return tenant_id
-
-    def _get_domain_id_from_auth(self, auth):
-        """Extract domain information from v3 auth dict.
-
-        Returns a valid domain_id if it exists, or None if not specified.
-        """
-        # FIXME(henry-nash): This is a placeholder that needs to be
-        # only called in the v3 context, and the auth.get calls
-        # converted to the v3 format
-        domain_id = auth.get('domainId', None)
-        domain_name = auth.get('domainName', None)
-        if domain_name:
-            try:
-                domain_ref = self.assignment_api.get_domain_by_name(
-                    domain_name)
-                domain_id = domain_ref['id']
-            except exception.DomainNotFound as e:
-                raise exception.Unauthorized(e)
-        return domain_id
 
     def _get_project_roles_and_ref(self, user_id, tenant_id):
         """Returns the project roles for this user, and the project ref."""
@@ -411,6 +393,7 @@ class Auth(controller.V2Controller):
         Identical to ``validate_token``, except does not return a response.
 
         """
+        # TODO(ayoung) validate against revocation API
         belongs_to = context['query_string'].get('belongsTo')
         self.token_provider_api.check_v2_token(token_id, belongs_to)
 
@@ -425,6 +408,7 @@ class Auth(controller.V2Controller):
 
         """
         belongs_to = context['query_string'].get('belongsTo')
+        # TODO(ayoung) validate against revocation API
         return self.token_provider_api.validate_v2_token(token_id, belongs_to)
 
     @controller.v2_deprecated
@@ -432,16 +416,18 @@ class Auth(controller.V2Controller):
         """Delete a token, effectively invalidating it for authz."""
         # TODO(termie): this stuff should probably be moved to middleware
         self.assert_admin(context)
-        self.token_api.delete_token(token_id)
+        self.token_provider_api.revoke_token(token_id)
 
     @controller.v2_deprecated
     @controller.protected()
     def revocation_list(self, context, auth=None):
+        if not CONF.token.revoke_by_id:
+            raise exception.Gone()
         tokens = self.token_api.list_revoked_tokens()
 
         for t in tokens:
             expires = t['expires']
-            if not (expires and isinstance(expires, six.text_type)):
+            if expires and isinstance(expires, datetime.datetime):
                     t['expires'] = timeutils.isotime(expires)
         data = {'revoked': tokens}
         json_data = json.dumps(data)

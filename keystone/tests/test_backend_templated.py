@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -50,9 +48,13 @@ class TestTemplatedCatalog(tests.TestCase, test_backend.CatalogTests):
 
     def setUp(self):
         super(TestTemplatedCatalog, self).setUp()
-        self.opt_in_group('catalog', template_file=DEFAULT_CATALOG_TEMPLATES)
         self.load_backends()
         self.load_fixtures(default_fixtures)
+
+    def config_overrides(self):
+        super(TestTemplatedCatalog, self).config_overrides()
+        self.config_fixture.config(group='catalog',
+                                   template_file=DEFAULT_CATALOG_TEMPLATES)
 
     def test_get_catalog(self):
         catalog_ref = self.catalog_api.get_catalog('foo', 'bar')
@@ -66,3 +68,11 @@ class TestTemplatedCatalog(tests.TestCase, test_backend.CatalogTests):
                           self.catalog_api.get_catalog,
                           'fake-user',
                           'fake-tenant')
+
+    def test_get_catalog_endpoint_disabled(self):
+        self.skipTest("Templated backend doesn't have disabled endpoints")
+
+    def test_get_v3_catalog_endpoint_disabled(self):
+        f = (super(TestTemplatedCatalog, self).
+             test_get_v3_catalog_endpoint_disabled)
+        self.assertRaises(exception.NotImplemented, f)

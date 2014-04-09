@@ -12,13 +12,17 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import json
+import copy
+import datetime
 import uuid
 
+from keystoneclient.common import cms
+
 from keystone import auth
-from keystone.common import cms
+from keystone.common import dependency
 from keystone import config
 from keystone import exception
+from keystone.openstack.common import timeutils
 from keystone import tests
 from keystone.tests import test_v3
 
@@ -27,7 +31,7 @@ CONF = config.CONF
 
 
 class TestAuthInfo(test_v3.RestfulTestCase):
-    # TDOD(henry-nash) These tests are somewhat inefficient, since by
+    # TODO(henry-nash) These tests are somewhat inefficient, since by
     # using the test_v3.RestfulTestCase class to gain access to the auth
     # building helper functions, they cause backend databases and fixtures
     # to be loaded unnecessarily.  Separating out the helper functions from
@@ -79,6 +83,18 @@ class TestAuthInfo(test_v3.RestfulTestCase):
                           None,
                           auth_data)
 
+    def test_get_method_names_duplicates(self):
+        auth_data = self.build_authentication_request(
+            token='test',
+            user_id='test',
+            password='test')['auth']
+        auth_data['identity']['methods'] = ['password', 'token',
+                                            'password', 'password']
+        context = None
+        auth_info = auth.controllers.AuthInfo.create(context, auth_data)
+        self.assertEqual(auth_info.get_method_names(),
+                         ['password', 'token'])
+
     def test_get_method_data_invalid_method(self):
         auth_data = self.build_authentication_request(
             user_id='test',
@@ -92,14 +108,13 @@ class TestAuthInfo(test_v3.RestfulTestCase):
                           method_name)
 
 
-class TestPKITokenAPIs(test_v3.RestfulTestCase):
-    def config_files(self):
-        conf_files = super(TestPKITokenAPIs, self).config_files()
-        conf_files.append(tests.dirs.tests('test_pki_token_provider.conf'))
-        return conf_files
-
-    def setUp(self):
-        super(TestPKITokenAPIs, self).setUp()
+class TokenAPITests(object):
+    # Why is this not just setUP? Because TokenAPITests is not a test class
+    # itself. If TokenAPITests became a subclass of the testcase, it would get
+    # called by the enumerate-tests-in-file code. The way the functions get
+    # resolved in Python for multiple inheritance means that a setUp in this
+    # would get skipped by the testrunner.
+    def doSetUp(self):
         auth_data = self.build_authentication_request(
             username=self.user['name'],
             user_domain_id=self.domain_id,
@@ -121,7 +136,7 @@ class TestPKITokenAPIs(test_v3.RestfulTestCase):
         token_id = resp.headers.get('X-Subject-Token')
         self.assertIn('expires_at', token_data['token'])
 
-        expected_token_id = cms.cms_sign_token(json.dumps(token_data),
+        expected_token_id = cms.cms_sign_token(resp.body,
                                                CONF.signing.certfile,
                                                CONF.signing.keyfile)
         self.assertEqual(expected_token_id, token_id)
@@ -176,7 +191,8 @@ class TestPKITokenAPIs(test_v3.RestfulTestCase):
 
         # 3) Update the default_domain_id config option to the new domain
 
-        self.opt_in_group('identity', default_domain_id=new_domain_id)
+        self.config_fixture.config(group='identity',
+                                   default_domain_id=new_domain_id)
 
         # 4) Get a token using v3 api.
 
@@ -375,20 +391,29 @@ class TestPKITokenAPIs(test_v3.RestfulTestCase):
         r = self.get('/auth/tokens?nocatalog', headers=headers)
         self.assertValidProjectScopedTokenResponse(r, require_catalog=False)
 
-    def test_revoke_token(self):
-        headers = {'X-Subject-Token': self.get_scoped_token()}
-        self.delete('/auth/tokens', headers=headers, expected_status=204)
-        self.head('/auth/tokens', headers=headers, expected_status=404)
-        # make sure we have a CRL
-        r = self.get('/auth/tokens/OS-PKI/revoked')
-        self.assertIn('signed', r.result)
+
+class TestPKITokenAPIs(test_v3.RestfulTestCase, TokenAPITests):
+    def config_overrides(self):
+        super(TestPKITokenAPIs, self).config_overrides()
+        self.config_fixture.config(
+            group='token',
+            provider='keystone.token.providers.pki.Provider')
+
+    def setUp(self):
+        super(TestPKITokenAPIs, self).setUp()
+        self.doSetUp()
 
 
-class TestUUIDTokenAPIs(TestPKITokenAPIs):
-    def config_files(self):
-        conf_files = super(TestUUIDTokenAPIs, self).config_files()
-        conf_files.append(tests.dirs.tests('test_uuid_token_provider.conf'))
-        return conf_files
+class TestUUIDTokenAPIs(test_v3.RestfulTestCase, TokenAPITests):
+    def config_overrides(self):
+        super(TestUUIDTokenAPIs, self).config_overrides()
+        self.config_fixture.config(
+            group='token',
+            provider='keystone.token.providers.uuid.Provider')
+
+    def setUp(self):
+        super(TestUUIDTokenAPIs, self).setUp()
+        self.doSetUp()
 
     def test_v3_token_id(self):
         auth_data = self.build_authentication_request(
@@ -408,14 +433,14 @@ class TestUUIDTokenAPIs(TestPKITokenAPIs):
 
 class TestTokenRevokeSelfAndAdmin(test_v3.RestfulTestCase):
     """Test token revoke using v3 Identity API by token owner and admin."""
-    def setUp(self):
-        """Setup for Test Cases.
+    def load_sample_data(self):
+        """Load Sample Data for Test Cases.
         Two domains, domainA and domainB
         Two users in domainA, userNormalA and userAdminA
         One user in domainB, userAdminB
 
         """
-        super(TestTokenRevokeSelfAndAdmin, self).setUp()
+        super(TestTokenRevokeSelfAndAdmin, self).load_sample_data()
         # DomainA setup
         self.domainA = self.new_domain_ref()
         self.assignment_api.create_domain(self.domainA['id'], self.domainA)
@@ -429,11 +454,7 @@ class TestTokenRevokeSelfAndAdmin(test_v3.RestfulTestCase):
         self.userNormalA['password'] = uuid.uuid4().hex
         self.identity_api.create_user(self.userNormalA['id'], self.userNormalA)
 
-        self.role1 = self.new_role_ref()
-        self.role1['name'] = 'admin'
-        self.assignment_api.create_role(self.role1['id'], self.role1)
-
-        self.assignment_api.create_grant(self.role1['id'],
+        self.assignment_api.create_grant(self.role['id'],
                                          user_id=self.userAdminA['id'],
                                          domain_id=self.domainA['id'])
 
@@ -441,7 +462,11 @@ class TestTokenRevokeSelfAndAdmin(test_v3.RestfulTestCase):
         self.orig_policy_file = CONF.policy_file
         from keystone.policy.backends import rules
         rules.reset()
-        self.opt(policy_file=tests.dirs.etc('policy.v3cloudsample.json'))
+
+    def config_overrides(self):
+        super(TestTokenRevokeSelfAndAdmin, self).config_overrides()
+        self.config_fixture.config(
+            policy_file=tests.dirs.etc('policy.v3cloudsample.json'))
 
     def test_user_revokes_own_token(self):
         r = self.post(
@@ -525,7 +550,7 @@ class TestTokenRevokeSelfAndAdmin(test_v3.RestfulTestCase):
         self.userAdminB = self.new_user_ref(domain_id=self.domainB['id'])
         self.userAdminB['password'] = uuid.uuid4().hex
         self.identity_api.create_user(self.userAdminB['id'], self.userAdminB)
-        self.assignment_api.create_grant(self.role1['id'],
+        self.assignment_api.create_grant(self.role['id'],
                                          user_id=self.userAdminB['id'],
                                          domain_id=self.domainB['id'])
         r = self.post(
@@ -552,8 +577,19 @@ class TestTokenRevokeSelfAndAdmin(test_v3.RestfulTestCase):
                     token=adminB_token)
 
 
-class TestTokenRevoking(test_v3.RestfulTestCase):
+@dependency.requires('revoke_api')
+class TestTokenRevokeById(test_v3.RestfulTestCase):
     """Test token revocation on the v3 Identity API."""
+
+    def config_overrides(self):
+        super(TestTokenRevokeById, self).config_overrides()
+        self.config_fixture.config(
+            group='revoke',
+            driver='keystone.contrib.revoke.backends.kvs.Revoke')
+        self.config_fixture.config(
+            group='token',
+            provider='keystone.token.providers.pki.Provider',
+            revoke_by_id=False)
 
     def setUp(self):
         """Setup for Token Revoking Test Cases.
@@ -578,7 +614,7 @@ class TestTokenRevoking(test_v3.RestfulTestCase):
         - User1 has role2 assigned to domainA
 
         """
-        super(TestTokenRevoking, self).setUp()
+        super(TestTokenRevokeById, self).setUp()
 
         # Start by creating a couple of domains and projects
         self.domainA = self.new_domain_ref()
@@ -720,46 +756,16 @@ class TestTokenRevoking(test_v3.RestfulTestCase):
                   headers={'X-Subject-Token': token},
                   expected_status=404)
 
-    def test_deleting_role_revokes_token(self):
-        """Test deleting a role revokes token.
-
-        Test Plan:
-
-        - Add some additional test data, namely:
-            - A third project (project C)
-            - Three additional users - user4 owned by domainB and user5 and 6
-              owned by domainA (different domain ownership should not affect
-              the test results, just provided to broaden test coverage)
-            - User5 is a member of group1
-            - Group1 gets an additional assignment - role1 on projectB as
-              well as its existing role1 on projectA
-            - User4 has role2 on Project C
-            - User6 has role1 on projectA and domainA
-        - This allows us to create 5 tokens by virtue of different types of
-          role assignment:
-          - user1, scoped to ProjectA by virtue of user role1 assignment
-          - user5, scoped to ProjectB by virtue of group role1 assignment
-          - user4, scoped to ProjectC by virtue of user role2 assignment
-          - user6, scoped to ProjectA by virtue of user role1 assignment
-          - user6, scoped to DomainA by virtue of user role1 assignment
-        - role1 is then deleted
-        - Check the tokens on Project A and B, and DomainA are revoked,
-          but not the one for Project C
-
-        """
-        # Add the additional test data
+    def role_data_fixtures(self):
         self.projectC = self.new_project_ref(domain_id=self.domainA['id'])
         self.assignment_api.create_project(self.projectC['id'], self.projectC)
-        self.user4 = self.new_user_ref(
-            domain_id=self.domainB['id'])
+        self.user4 = self.new_user_ref(domain_id=self.domainB['id'])
         self.user4['password'] = uuid.uuid4().hex
         self.identity_api.create_user(self.user4['id'], self.user4)
-
         self.user5 = self.new_user_ref(
             domain_id=self.domainA['id'])
         self.user5['password'] = uuid.uuid4().hex
         self.identity_api.create_user(self.user5['id'], self.user5)
-
         self.user6 = self.new_user_ref(
             domain_id=self.domainA['id'])
         self.user6['password'] = uuid.uuid4().hex
@@ -778,6 +784,34 @@ class TestTokenRevoking(test_v3.RestfulTestCase):
         self.assignment_api.create_grant(self.role1['id'],
                                          user_id=self.user6['id'],
                                          domain_id=self.domainA['id'])
+
+    def test_deleting_role_revokes_token(self):
+        """Test deleting a role revokes token.
+
+            Add some additional test data, namely:
+             - A third project (project C)
+             - Three additional users - user4 owned by domainB and user5 and 6
+               owned by domainA (different domain ownership should not affect
+               the test results, just provided to broaden test coverage)
+             - User5 is a member of group1
+             - Group1 gets an additional assignment - role1 on projectB as
+               well as its existing role1 on projectA
+             - User4 has role2 on Project C
+             - User6 has role1 on projectA and domainA
+             - This allows us to create 5 tokens by virtue of different types
+               of role assignment:
+               - user1, scoped to ProjectA by virtue of user role1 assignment
+               - user5, scoped to ProjectB by virtue of group role1 assignment
+               - user4, scoped to ProjectC by virtue of user role2 assignment
+               - user6, scoped to ProjectA by virtue of user role1 assignment
+               - user6, scoped to DomainA by virtue of user role1 assignment
+             - role1 is then deleted
+             - Check the tokens on Project A and B, and DomainA are revoked,
+               but not the one for Project C
+
+        """
+
+        self.role_data_fixtures()
 
         # Now we are ready to start issuing requests
         auth_data = self.build_authentication_request(
@@ -1083,13 +1117,13 @@ class TestTokenRevoking(test_v3.RestfulTestCase):
         self.head('/auth/tokens',
                   headers={'X-Subject-Token': token2},
                   expected_status=204)
-        # Adding user2 to a group should invalidate token
+        # Adding user2 to a group should not invalidate token
         self.put('/groups/%(group_id)s/users/%(user_id)s' % {
             'group_id': self.group2['id'],
             'user_id': self.user2['id']})
         self.head('/auth/tokens',
                   headers={'X-Subject-Token': token2},
-                  expected_status=404)
+                  expected_status=204)
 
     def test_removing_role_assignment_does_not_affect_other_users(self):
         """Revoking a role from one user should not affect other users."""
@@ -1163,11 +1197,207 @@ class TestTokenRevoking(test_v3.RestfulTestCase):
         self.head(role_path, expected_status=404)
 
 
+@dependency.requires('revoke_api')
+class TestTokenRevokeApi(TestTokenRevokeById):
+    EXTENSION_NAME = 'revoke'
+    EXTENSION_TO_ADD = 'revoke_extension'
+
+    """Test token revocation on the v3 Identity API."""
+    def config_overrides(self):
+        super(TestTokenRevokeApi, self).config_overrides()
+        self.config_fixture.config(
+            group='revoke',
+            driver='keystone.contrib.revoke.backends.kvs.Revoke')
+        self.config_fixture.config(
+            group='token',
+            provider='keystone.token.providers.pki.Provider',
+            revoke_by_id=False)
+
+    def assertValidDeletedProjectResponse(self, events_response, project_id):
+        events = events_response['events']
+        self.assertEqual(1, len(events))
+        self.assertEqual(project_id, events[0]['project_id'])
+        self.assertIsNotNone(events[0]['issued_before'])
+        self.assertIsNotNone(events_response['links'])
+        del (events_response['events'][0]['issued_before'])
+        del (events_response['links'])
+        expected_response = {'events': [{'project_id': project_id}]}
+        self.assertEqual(expected_response, events_response)
+
+    def assertDomainInList(self, events_response, domain_id):
+        events = events_response['events']
+        self.assertEqual(1, len(events))
+        self.assertEqual(domain_id, events[0]['domain_id'])
+        self.assertIsNotNone(events[0]['issued_before'])
+        self.assertIsNotNone(events_response['links'])
+        del (events_response['events'][0]['issued_before'])
+        del (events_response['links'])
+        expected_response = {'events': [{'domain_id': domain_id}]}
+        self.assertEqual(expected_response, events_response)
+
+    def assertValidRevokedTokenResponse(self, events_response, user_id):
+        events = events_response['events']
+        self.assertEqual(1, len(events))
+        self.assertEqual(user_id, events[0]['user_id'])
+        self.assertIsNotNone(events[0]['expires_at'])
+        self.assertIsNotNone(events[0]['issued_before'])
+        self.assertIsNotNone(events_response['links'])
+        del (events_response['events'][0]['expires_at'])
+        del (events_response['events'][0]['issued_before'])
+        del (events_response['links'])
+        expected_response = {'events': [{'user_id': user_id}]}
+        self.assertEqual(expected_response, events_response)
+
+    def test_revoke_token(self):
+        scoped_token = self.get_scoped_token()
+        headers = {'X-Subject-Token': scoped_token}
+        self.head('/auth/tokens', headers=headers, expected_status=204)
+        self.delete('/auth/tokens', headers=headers, expected_status=204)
+        self.head('/auth/tokens', headers=headers, expected_status=404)
+        events_response = self.get('/OS-REVOKE/events',
+                                   expected_status=200).json_body
+        self.assertValidRevokedTokenResponse(events_response, self.user['id'])
+
+    def get_v2_token(self):
+        body = {
+            'auth': {
+                'passwordCredentials': {
+                    'username': self.default_domain_user['name'],
+                    'password': self.default_domain_user['password'],
+                },
+            },
+        }
+        r = self.admin_request(method='POST', path='/v2.0/tokens', body=body)
+        return r.json_body['access']['token']['id']
+
+    def test_revoke_v2_token(self):
+        token = self.get_v2_token()
+        headers = {'X-Subject-Token': token}
+        self.head('/auth/tokens', headers=headers, expected_status=204)
+        self.delete('/auth/tokens', headers=headers, expected_status=204)
+        self.head('/auth/tokens', headers=headers, expected_status=404)
+        events_response = self.get('/OS-REVOKE/events',
+                                   expected_status=200).json_body
+
+        self.assertValidRevokedTokenResponse(events_response,
+                                             self.default_domain_user['id'])
+
+    def test_revoke_by_id_false_410(self):
+        self.get('/auth/tokens/OS-PKI/revoked', expected_status=410)
+
+    def test_list_delete_project_shows_in_event_list(self):
+        self.role_data_fixtures()
+        events = self.get('/OS-REVOKE/events',
+                          expected_status=200).json_body['events']
+        self.assertEqual([], events)
+        self.delete(
+            '/projects/%(project_id)s' % {'project_id': self.projectA['id']})
+        events_response = self.get('/OS-REVOKE/events',
+                                   expected_status=200).json_body
+
+        self.assertValidDeletedProjectResponse(events_response,
+                                               self.projectA['id'])
+
+    def test_disable_domain_shows_in_event_list(self):
+        events = self.get('/OS-REVOKE/events',
+                          expected_status=200).json_body['events']
+        self.assertEqual([], events)
+        disable_body = {'domain': {'enabled': False}}
+        self.patch(
+            '/domains/%(project_id)s' % {'project_id': self.domainA['id']},
+            body=disable_body)
+
+        events = self.get('/OS-REVOKE/events',
+                          expected_status=200).json_body
+
+        self.assertDomainInList(events, self.domainA['id'])
+
+    def assertUserAndExpiryInList(self, events, user_id, expires_at):
+        found = False
+        for e in events:
+            if e['user_id'] == user_id and e['expires_at'] == expires_at:
+                found = True
+        self.assertTrue(found,
+                        'event with correct user_id %s and expires_at value '
+                        'not in list' % user_id)
+
+    def test_list_delete_token_shows_in_event_list(self):
+        self.role_data_fixtures()
+        events = self.get('/OS-REVOKE/events',
+                          expected_status=200).json_body['events']
+        self.assertEqual([], events)
+
+        scoped_token = self.get_scoped_token()
+        headers = {'X-Subject-Token': scoped_token}
+        auth_req = self.build_authentication_request(token=scoped_token)
+        response = self.post('/auth/tokens', body=auth_req)
+        token2 = response.json_body['token']
+        headers2 = {'X-Subject-Token': response.headers['X-Subject-Token']}
+
+        response = self.post('/auth/tokens', body=auth_req)
+        response.json_body['token']
+        headers3 = {'X-Subject-Token': response.headers['X-Subject-Token']}
+
+        scoped_token = self.get_scoped_token()
+        headers_unrevoked = {'X-Subject-Token': scoped_token}
+
+        self.head('/auth/tokens', headers=headers, expected_status=204)
+        self.head('/auth/tokens', headers=headers2, expected_status=204)
+        self.head('/auth/tokens', headers=headers3, expected_status=204)
+        self.head('/auth/tokens', headers=headers_unrevoked,
+                  expected_status=204)
+
+        self.delete('/auth/tokens', headers=headers, expected_status=204)
+        # NOTE(ayoung): not deleting token3, as it should be deleted
+        # by previous
+        events_response = self.get('/OS-REVOKE/events',
+                                   expected_status=200).json_body
+        events = events_response['events']
+        self.assertEqual(1, len(events))
+        self.assertUserAndExpiryInList(events,
+                                       token2['user']['id'],
+                                       token2['expires_at'])
+        self.assertValidRevokedTokenResponse(events_response, self.user['id'])
+        self.head('/auth/tokens', headers=headers, expected_status=404)
+        self.head('/auth/tokens', headers=headers2, expected_status=404)
+        self.head('/auth/tokens', headers=headers3, expected_status=404)
+        self.head('/auth/tokens', headers=headers_unrevoked,
+                  expected_status=204)
+
+    def test_list_with_filter(self):
+
+        self.role_data_fixtures()
+        events = self.get('/OS-REVOKE/events',
+                          expected_status=200).json_body['events']
+        self.assertEqual(0, len(events))
+
+        scoped_token = self.get_scoped_token()
+        headers = {'X-Subject-Token': scoped_token}
+        auth = self.build_authentication_request(token=scoped_token)
+        response = self.post('/auth/tokens', body=auth)
+        headers2 = {'X-Subject-Token': response.headers['X-Subject-Token']}
+        self.delete('/auth/tokens', headers=headers, expected_status=204)
+        self.delete('/auth/tokens', headers=headers2, expected_status=204)
+
+        events = self.get('/OS-REVOKE/events',
+                          expected_status=200).json_body['events']
+
+        self.assertEqual(2, len(events))
+        future = timeutils.isotime(timeutils.utcnow() +
+                                   datetime.timedelta(seconds=1000))
+
+        events = self.get('/OS-REVOKE/events?since=%s' % (future),
+                          expected_status=200).json_body['events']
+        self.assertEqual(0, len(events))
+
+
 class TestAuthExternalDisabled(test_v3.RestfulTestCase):
-    def config_files(self):
-        cfg_list = self._config_file_list[:]
-        cfg_list.append(tests.dirs.tests('auth_plugin_external_disabled.conf'))
-        return cfg_list
+    def config_overrides(self):
+        super(TestAuthExternalDisabled, self).config_overrides()
+        self.config_fixture.config(
+            group='auth',
+            methods=['keystone.auth.plugins.password.Password',
+                     'keystone.auth.plugins.token.Token'])
 
     def test_remote_user_disabled(self):
         api = auth.controllers.Auth()
@@ -1184,11 +1414,13 @@ class TestAuthExternalDisabled(test_v3.RestfulTestCase):
 class TestAuthExternalLegacyDefaultDomain(test_v3.RestfulTestCase):
     content_type = 'json'
 
-    def config_files(self):
-        cfg_list = self._config_file_list[:]
-        cfg_list.append(
-            tests.dirs.tests('auth_plugin_external_default_legacy.conf'))
-        return cfg_list
+    def config_overrides(self):
+        super(TestAuthExternalLegacyDefaultDomain, self).config_overrides()
+        self.config_fixture.config(
+            group='auth',
+            methods=['keystone.auth.plugins.external.LegacyDefaultDomain',
+                     'keystone.auth.plugins.password.Password',
+                     'keystone.auth.plugins.token.Token'])
 
     def test_remote_user_no_realm(self):
         CONF.auth.methods = 'external'
@@ -1213,11 +1445,13 @@ class TestAuthExternalLegacyDefaultDomain(test_v3.RestfulTestCase):
 class TestAuthExternalLegacyDomain(test_v3.RestfulTestCase):
     content_type = 'json'
 
-    def config_files(self):
-        cfg_list = self._config_file_list[:]
-        cfg_list.append(
-            tests.dirs.tests('auth_plugin_external_domain_legacy.conf'))
-        return cfg_list
+    def config_overrides(self):
+        super(TestAuthExternalLegacyDomain, self).config_overrides()
+        self.config_fixture.config(
+            group='auth',
+            methods=['keystone.auth.plugins.external.LegacyDomain',
+                     'keystone.auth.plugins.password.Password',
+                     'keystone.auth.plugins.token.Token'])
 
     def test_remote_user_with_realm(self):
         api = auth.controllers.Auth()
@@ -1232,7 +1466,7 @@ class TestAuthExternalLegacyDomain(test_v3.RestfulTestCase):
         # '@' character.
         user = {'name': 'myname@mydivision'}
         self.identity_api.update_user(self.user['id'], user)
-        remote_user = '%s@%s' % (user["name"], self.domain['name'])
+        remote_user = '%s@%s' % (user['name'], self.domain['name'])
         context, auth_info, auth_context = self.build_external_auth_request(
             remote_user)
 
@@ -1264,10 +1498,13 @@ class TestAuthExternalLegacyDomain(test_v3.RestfulTestCase):
 class TestAuthExternalDomain(test_v3.RestfulTestCase):
     content_type = 'json'
 
-    def config_files(self):
-        cfg_list = self._config_file_list[:]
-        cfg_list.append(tests.dirs.tests('auth_plugin_external_domain.conf'))
-        return cfg_list
+    def config_overrides(self):
+        super(TestAuthExternalDomain, self).config_overrides()
+        self.config_fixture.config(
+            group='auth',
+            methods=['keystone.auth.plugins.external.Domain',
+                     'keystone.auth.plugins.password.Password',
+                     'keystone.auth.plugins.token.Token'])
 
     def test_remote_user_with_realm(self):
         api = auth.controllers.Auth()
@@ -1283,7 +1520,7 @@ class TestAuthExternalDomain(test_v3.RestfulTestCase):
         # '@' character.
         user = {'name': 'myname@mydivision'}
         self.identity_api.update_user(self.user['id'], user)
-        remote_user = user["name"]
+        remote_user = user['name']
         context, auth_info, auth_context = self.build_external_auth_request(
             remote_user, remote_domain=remote_domain)
 
@@ -1417,6 +1654,79 @@ class TestAuthJSON(test_v3.RestfulTestCase):
         self.assertEqual(r.result['token']['project']['id'],
                          self.project['id'])
 
+    def test_auth_catalog_attributes(self):
+        if self.content_type == 'xml':
+            self.skipTest('XML catalog parsing is just broken')
+
+        auth_data = self.build_authentication_request(
+            user_id=self.user['id'],
+            password=self.user['password'],
+            project_id=self.project['id'])
+        r = self.post('/auth/tokens', body=auth_data)
+
+        catalog = r.result['token']['catalog']
+        self.assertEqual(1, len(catalog))
+        catalog = catalog[0]
+
+        self.assertEqual(self.service['id'], catalog['id'])
+        self.assertEqual(self.service['name'], catalog['name'])
+        self.assertEqual(self.service['type'], catalog['type'])
+
+        endpoint = catalog['endpoints']
+        self.assertEqual(1, len(endpoint))
+        endpoint = endpoint[0]
+
+        self.assertEqual(self.endpoint['id'], endpoint['id'])
+        self.assertEqual(self.endpoint['interface'], endpoint['interface'])
+        self.assertEqual(self.endpoint['region'], endpoint['region'])
+        self.assertEqual(self.endpoint['url'], endpoint['url'])
+
+    def _check_disabled_endpoint_result(self, catalog, disabled_endpoint_id):
+        endpoints = catalog[0]['endpoints']
+        endpoint_ids = [ep['id'] for ep in endpoints]
+        self.assertEqual([self.endpoint_id], endpoint_ids)
+
+    def test_auth_catalog_disabled_service(self):
+        """On authenticate, get a catalog that excludes disabled services."""
+        # although the child endpoint is enabled, the service is disabled
+        self.assertTrue(self.endpoint['enabled'])
+        self.catalog_api.update_service(
+            self.endpoint['service_id'], {'enabled': False})
+        service = self.catalog_api.get_service(self.endpoint['service_id'])
+        self.assertFalse(service['enabled'])
+
+        auth_data = self.build_authentication_request(
+            user_id=self.user['id'],
+            password=self.user['password'],
+            project_id=self.project['id'])
+        r = self.post('/auth/tokens', body=auth_data)
+
+        # In JSON, this is an empty list. In XML, this is an empty string.
+        self.assertFalse(r.result['token']['catalog'])
+
+    def test_auth_catalog_disabled_endpoint(self):
+        """On authenticate, get a catalog that excludes disabled endpoints."""
+
+        # Create a disabled endpoint that's like the enabled one.
+        disabled_endpoint_ref = copy.copy(self.endpoint)
+        disabled_endpoint_id = uuid.uuid4().hex
+        disabled_endpoint_ref.update({
+            'id': disabled_endpoint_id,
+            'enabled': False,
+            'interface': 'internal'
+        })
+        self.catalog_api.create_endpoint(disabled_endpoint_id,
+                                         disabled_endpoint_ref)
+
+        auth_data = self.build_authentication_request(
+            user_id=self.user['id'],
+            password=self.user['password'],
+            project_id=self.project['id'])
+        r = self.post('/auth/tokens', body=auth_data)
+
+        self._check_disabled_endpoint_result(r.result['token']['catalog'],
+                                             disabled_endpoint_id)
+
     def test_project_id_scoped_token_with_user_id_401(self):
         project_id = uuid.uuid4().hex
         project = self.new_project_ref(domain_id=self.domain_id)
@@ -1523,7 +1833,7 @@ class TestAuthJSON(test_v3.RestfulTestCase):
         roles_ids = []
         for ref in token['roles']:
             roles_ids.append(ref['id'])
-        self.assertEqual(len(token['roles']), 2)
+        self.assertEqual(2, len(token['roles']))
         self.assertIn(role_list[1]['id'], roles_ids)
         self.assertIn(role_list[5]['id'], roles_ids)
 
@@ -1537,7 +1847,7 @@ class TestAuthJSON(test_v3.RestfulTestCase):
         roles_ids = []
         for ref in token['roles']:
             roles_ids.append(ref['id'])
-        self.assertEqual(len(token['roles']), 2)
+        self.assertEqual(2, len(token['roles']))
         self.assertIn(role_list[0]['id'], roles_ids)
         self.assertIn(role_list[4]['id'], roles_ids)
 
@@ -1555,7 +1865,7 @@ class TestAuthJSON(test_v3.RestfulTestCase):
         roles_ids = []
         for ref in token['roles']:
             roles_ids.append(ref['id'])
-        self.assertEqual(len(token['roles']), 3)
+        self.assertEqual(3, len(token['roles']))
         self.assertIn(role_list[1]['id'], roles_ids)
         self.assertIn(role_list[5]['id'], roles_ids)
         self.assertIn(role_list[7]['id'], roles_ids)
@@ -1802,8 +2112,8 @@ class TestAuthJSON(test_v3.RestfulTestCase):
                           auth_context)
 
     def test_remote_user_and_password(self):
-        #both REMOTE_USER and password methods must pass.
-        #note that they do not have to match
+        # both REMOTE_USER and password methods must pass.
+        # note that they do not have to match
         api = auth.controllers.Auth()
         auth_data = self.build_authentication_request(
             user_domain_id=self.domain['id'],
@@ -1815,8 +2125,8 @@ class TestAuthJSON(test_v3.RestfulTestCase):
         api.authenticate(context, auth_info, auth_context)
 
     def test_remote_user_and_explicit_external(self):
-        #both REMOTE_USER and password methods must pass.
-        #note that they do not have to match
+        # both REMOTE_USER and password methods must pass.
+        # note that they do not have to match
         auth_data = self.build_authentication_request(
             user_domain_id=self.domain['id'],
             username=self.user['name'],
@@ -1833,7 +2143,7 @@ class TestAuthJSON(test_v3.RestfulTestCase):
                           auth_context)
 
     def test_remote_user_bad_password(self):
-        #both REMOTE_USER and password methods must pass.
+        # both REMOTE_USER and password methods must pass.
         api = auth.controllers.Auth()
         auth_data = self.build_authentication_request(
             user_domain_id=self.domain['id'],
@@ -1857,9 +2167,9 @@ class TestAuthJSON(test_v3.RestfulTestCase):
         token = self.assertValidUnscopedTokenResponse(r)
         self.assertNotIn('bind', token)
 
-    #TODO(ayoung): move to TestPKITokenAPIs; it will be run for both formats
+    # TODO(ayoung): move to TestPKITokenAPIs; it will be run for both formats
     def test_verify_with_bound_token(self):
-        self.opt_in_group('token', bind='kerberos')
+        self.config_fixture.config(group='token', bind='kerberos')
         auth_data = self.build_authentication_request(
             project_id=self.project['id'])
         remote_user = self.default_domain_user['name']
@@ -1900,7 +2210,7 @@ class TestAuthJSON(test_v3.RestfulTestCase):
         self.assertEqual(token['bind']['kerberos'], remote_user)
 
     def test_v2_v3_bind_token_intermix(self):
-        self.opt_in_group('token', bind='kerberos')
+        self.config_fixture.config(group='token', bind='kerberos')
 
         # we need our own user registered to the default domain because of
         # the way external auth works.
@@ -1995,11 +2305,19 @@ class TestAuthJSON(test_v3.RestfulTestCase):
 class TestAuthXML(TestAuthJSON):
     content_type = 'xml'
 
+    def _check_disabled_endpoint_result(self, catalog, disabled_endpoint_id):
+        # FIXME(blk-u): As far as I can tell the catalog in the XML result is
+        # broken. Looks like it includes only one endpoint or the other, and
+        # which one is included is random.
+
+        endpoint = catalog['service']['endpoint']
+        self.assertEqual(self.endpoint_id, endpoint['id'])
+
 
 class TestTrustOptional(test_v3.RestfulTestCase):
-    def setUp(self, *args, **kwargs):
-        self.opt_in_group('trust', enabled=False)
-        super(TestTrustOptional, self).setUp(*args, **kwargs)
+    def config_overrides(self):
+        super(TestTrustOptional, self).config_overrides()
+        self.config_fixture.config(group='trust', enabled=False)
 
     def test_trusts_404(self):
         self.get('/OS-TRUST/trusts', body={'trust': {}}, expected_status=404)
@@ -2013,9 +2331,23 @@ class TestTrustOptional(test_v3.RestfulTestCase):
         self.post('/auth/tokens', body=auth_data, expected_status=403)
 
 
+@dependency.requires('revoke_api')
 class TestTrustAuth(TestAuthInfo):
+    EXTENSION_NAME = 'revoke'
+    EXTENSION_TO_ADD = 'revoke_extension'
+
+    def config_overrides(self):
+        super(TestTrustAuth, self).config_overrides()
+        self.config_fixture.config(
+            group='revoke',
+            driver='keystone.contrib.revoke.backends.kvs.Revoke')
+        self.config_fixture.config(
+            group='token',
+            provider='keystone.token.providers.pki.Provider',
+            revoke_by_id=False)
+        self.config_fixture.config(group='trust', enabled=True)
+
     def setUp(self):
-        self.opt_in_group('trust', enabled=True)
         super(TestTrustAuth, self).setUp()
 
         # create a trustee to delegate stuff to
@@ -2025,8 +2357,8 @@ class TestTrustAuth(TestAuthInfo):
         self.identity_api.create_user(self.trustee_user_id, self.trustee_user)
 
     def test_create_trust_400(self):
-        self.skipTest('Blocked by bug 1133435')
-        self.post('/OS-TRUST/trusts', body={'trust': {}}, expected_status=400)
+        # The server returns a 403 Forbidden rather than a 400, see bug 1133435
+        self.post('/OS-TRUST/trusts', body={'trust': {}}, expected_status=403)
 
     def test_create_unscoped_trust(self):
         ref = self.new_trust_ref(
@@ -2035,6 +2367,145 @@ class TestTrustAuth(TestAuthInfo):
         del ref['id']
         r = self.post('/OS-TRUST/trusts', body={'trust': ref})
         self.assertValidTrustResponse(r, ref)
+
+    def test_create_trust_no_roles(self):
+        ref = self.new_trust_ref(
+            trustor_user_id=self.user_id,
+            trustee_user_id=self.trustee_user_id,
+            project_id=self.project_id)
+        del ref['id']
+        self.post('/OS-TRUST/trusts', body={'trust': ref}, expected_status=403)
+
+    def _initialize_test_consume_trust(self, count):
+        # Make sure remaining_uses is decremented as we consume the trust
+        ref = self.new_trust_ref(
+            trustor_user_id=self.user_id,
+            trustee_user_id=self.trustee_user_id,
+            project_id=self.project_id,
+            remaining_uses=count,
+            role_ids=[self.role_id])
+        del ref['id']
+        r = self.post('/OS-TRUST/trusts', body={'trust': ref})
+        # make sure the trust exists
+        trust = self.assertValidTrustResponse(r, ref)
+        r = self.get(
+            '/OS-TRUST/trusts/%(trust_id)s' % {'trust_id': trust['id']},
+            expected_status=200)
+        # get a token for the trustee
+        auth_data = self.build_authentication_request(
+            user_id=self.trustee_user['id'],
+            password=self.trustee_user['password'])
+        r = self.post('/auth/tokens', body=auth_data, expected_status=201)
+        token = r.headers.get('X-Subject-Token')
+        # get a trust token, consume one use
+        auth_data = self.build_authentication_request(
+            token=token,
+            trust_id=trust['id'])
+        r = self.post('/auth/tokens', body=auth_data, expected_status=201)
+        return trust
+
+    def test_consume_trust_once(self):
+        trust = self._initialize_test_consume_trust(2)
+        # check decremented value
+        r = self.get(
+            '/OS-TRUST/trusts/%(trust_id)s' % {'trust_id': trust['id']},
+            expected_status=200)
+        trust = r.result.get('trust')
+        self.assertIsNotNone(trust)
+        self.assertEqual(trust['remaining_uses'], 1)
+
+    def test_create_one_time_use_trust(self):
+        trust = self._initialize_test_consume_trust(1)
+        # No more uses, the trust is made unavailable
+        self.get(
+            '/OS-TRUST/trusts/%(trust_id)s' % {'trust_id': trust['id']},
+            expected_status=404)
+        # this time we can't get a trust token
+        auth_data = self.build_authentication_request(
+            user_id=self.trustee_user['id'],
+            password=self.trustee_user['password'],
+            trust_id=trust['id'])
+        self.post('/auth/tokens', body=auth_data, expected_status=401)
+
+    def test_create_trust_with_bad_values_for_remaining_uses(self):
+        # negative values for the remaining_uses parameter are forbidden
+        self._create_trust_with_bad_remaining_use(bad_value=-1)
+        # 0 is a forbidden value as well
+        self._create_trust_with_bad_remaining_use(bad_value=0)
+        # as are non integer values
+        self._create_trust_with_bad_remaining_use(bad_value="a bad value")
+        self._create_trust_with_bad_remaining_use(bad_value=7.2)
+
+    def _create_trust_with_bad_remaining_use(self, bad_value):
+        ref = self.new_trust_ref(
+            trustor_user_id=self.user_id,
+            trustee_user_id=self.trustee_user_id,
+            project_id=self.project_id,
+            remaining_uses=bad_value,
+            role_ids=[self.role_id])
+        del ref['id']
+        self.post('/OS-TRUST/trusts',
+                  body={'trust': ref},
+                  expected_status=400)
+
+    def test_invalid_trust_request_without_impersonation(self):
+        ref = self.new_trust_ref(
+            trustor_user_id=self.user_id,
+            trustee_user_id=self.trustee_user_id,
+            project_id=self.project_id,
+            role_ids=[self.role_id])
+
+        del ref['id']
+        del ref['impersonation']
+
+        self.post('/OS-TRUST/trusts',
+                  body={'trust': ref},
+                  expected_status=400)
+
+    def test_invalid_trust_request_without_trustee(self):
+        ref = self.new_trust_ref(
+            trustor_user_id=self.user_id,
+            trustee_user_id=self.trustee_user_id,
+            project_id=self.project_id,
+            role_ids=[self.role_id])
+
+        del ref['id']
+        del ref['trustee_user_id']
+
+        self.post('/OS-TRUST/trusts',
+                  body={'trust': ref},
+                  expected_status=400)
+
+    def test_create_unlimited_use_trust(self):
+        # by default trusts are unlimited in terms of tokens that can be
+        # generated from them, this test creates such a trust explicitly
+        ref = self.new_trust_ref(
+            trustor_user_id=self.user_id,
+            trustee_user_id=self.trustee_user_id,
+            project_id=self.project_id,
+            remaining_uses=None,
+            role_ids=[self.role_id])
+        del ref['id']
+        r = self.post('/OS-TRUST/trusts', body={'trust': ref})
+        trust = self.assertValidTrustResponse(r, ref)
+
+        r = self.get(
+            '/OS-TRUST/trusts/%(trust_id)s' % {'trust_id': trust['id']},
+            expected_status=200)
+        auth_data = self.build_authentication_request(
+            user_id=self.trustee_user['id'],
+            password=self.trustee_user['password'])
+        r = self.post('/auth/tokens', body=auth_data, expected_status=201)
+        token = r.headers.get('X-Subject-Token')
+        auth_data = self.build_authentication_request(
+            token=token,
+            trust_id=trust['id'])
+        r = self.post('/auth/tokens', body=auth_data, expected_status=201)
+        r = self.get(
+            '/OS-TRUST/trusts/%(trust_id)s' % {'trust_id': trust['id']},
+            expected_status=200)
+        trust = r.result.get('trust')
+        self.assertIsNone(trust['remaining_uses'])
 
     def test_trust_crud(self):
         ref = self.new_trust_ref(
@@ -2090,14 +2561,18 @@ class TestTrustAuth(TestAuthInfo):
     def test_create_trust_trustee_404(self):
         ref = self.new_trust_ref(
             trustor_user_id=self.user_id,
-            trustee_user_id=uuid.uuid4().hex)
+            trustee_user_id=uuid.uuid4().hex,
+            project_id=self.project_id,
+            role_ids=[self.role_id])
         del ref['id']
         self.post('/OS-TRUST/trusts', body={'trust': ref}, expected_status=404)
 
     def test_create_trust_trustor_trustee_backwards(self):
         ref = self.new_trust_ref(
             trustor_user_id=self.trustee_user_id,
-            trustee_user_id=self.user_id)
+            trustee_user_id=self.user_id,
+            project_id=self.project_id,
+            role_ids=[self.role_id])
         del ref['id']
         self.post('/OS-TRUST/trusts', body={'trust': ref}, expected_status=403)
 
@@ -2352,6 +2827,44 @@ class TestTrustAuth(TestAuthInfo):
         self.assertEqual(r.result['token']['project']['name'],
                          self.project['name'])
 
+    def assertTrustTokensRevoked(self, trust_id):
+        revocation_response = self.get('/OS-REVOKE/events',
+                                       expected_status=200)
+        revocation_events = revocation_response.json_body['events']
+        found = False
+        for event in revocation_events:
+            if event.get('OS-TRUST:trust_id') == trust_id:
+                found = True
+        self.assertTrue(found, 'event with trust_id %s not found in list' %
+                        trust_id)
+
+    def test_delete_trust_revokes_tokens(self):
+        ref = self.new_trust_ref(
+            trustor_user_id=self.user_id,
+            trustee_user_id=self.trustee_user_id,
+            project_id=self.project_id,
+            impersonation=False,
+            expires=dict(minutes=1),
+            role_ids=[self.role_id])
+        del ref['id']
+        r = self.post('/OS-TRUST/trusts', body={'trust': ref})
+        trust = self.assertValidTrustResponse(r)
+        trust_id = trust['id']
+        auth_data = self.build_authentication_request(
+            user_id=self.trustee_user['id'],
+            password=self.trustee_user['password'],
+            trust_id=trust_id)
+        r = self.post('/auth/tokens', body=auth_data)
+        self.assertValidProjectTrustScopedTokenResponse(
+            r, self.trustee_user)
+        trust_token = r.headers['X-Subject-Token']
+        self.delete('/OS-TRUST/trusts/%(trust_id)s' % {
+            'trust_id': trust_id},
+            expected_status=204)
+        headers = {'X-Subject-Token': trust_token}
+        self.head('/auth/tokens', headers=headers, expected_status=404)
+        self.assertTrustTokensRevoked(trust_id)
+
     def test_delete_trust(self):
         ref = self.new_trust_ref(
             trustor_user_id=self.user_id,
@@ -2400,19 +2913,19 @@ class TestTrustAuth(TestAuthInfo):
 
         r = self.get('/OS-TRUST/trusts', expected_status=200)
         trusts = r.result['trusts']
-        self.assertEqual(len(trusts), 3)
+        self.assertEqual(3, len(trusts))
         self.assertValidTrustListResponse(r)
 
         r = self.get('/OS-TRUST/trusts?trustor_user_id=%s' %
                      self.user_id, expected_status=200)
         trusts = r.result['trusts']
-        self.assertEqual(len(trusts), 3)
+        self.assertEqual(3, len(trusts))
         self.assertValidTrustListResponse(r)
 
         r = self.get('/OS-TRUST/trusts?trustee_user_id=%s' %
                      self.user_id, expected_status=200)
         trusts = r.result['trusts']
-        self.assertEqual(len(trusts), 0)
+        self.assertEqual(0, len(trusts))
 
     def test_change_password_invalidates_trust_tokens(self):
         ref = self.new_trust_ref(
@@ -2503,4 +3016,4 @@ class TestAPIProtectionWithoutAuthContextMiddleware(test_v3.RestfulTestCase):
                    'query_string': {},
                    'environment': {}}
         r = auth_controller.validate_token(context)
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(200, r.status_code)

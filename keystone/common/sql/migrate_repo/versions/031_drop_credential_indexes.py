@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -18,8 +16,8 @@ import sqlalchemy
 
 
 def upgrade(migrate_engine):
-    #This migration is relevant only for mysql because for all other
-    #migrate engines these indexes were successfully dropped.
+    # This migration is relevant only for mysql because for all other
+    # migrate engines these indexes were successfully dropped.
     if migrate_engine.name != 'mysql':
         return
     meta = sqlalchemy.MetaData(bind=migrate_engine)

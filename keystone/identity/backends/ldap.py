@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -17,6 +15,7 @@ from __future__ import absolute_import
 import uuid
 
 import ldap
+import ldap.filter
 
 from keystone import clean
 from keystone.common import dependency
@@ -27,6 +26,7 @@ from keystone.common import utils
 from keystone import config
 from keystone import exception
 from keystone import identity
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
 
 
@@ -180,7 +180,8 @@ class Identity(identity.Driver):
             if x['id'] == user_id:
                 found = True
                 break
-        return found
+        if not found:
+            raise exception.NotFound(_('User not found in group'))
 
 
 # TODO(termie): turn this into a data object and move logic to driver
@@ -328,9 +329,10 @@ class GroupApi(common_ldap.BaseLdap):
     def list_user_groups(self, user_dn):
         """Return a list of groups for which the user is a member."""
 
+        user_dn_esc = ldap.filter.escape_filter_chars(user_dn)
         query = '(&(objectClass=%s)(%s=%s)%s)' % (self.object_class,
                                                   self.member_attribute,
-                                                  user_dn,
+                                                  user_dn_esc,
                                                   self.ldap_filter or '')
         memberships = self.get_all(query)
         return memberships

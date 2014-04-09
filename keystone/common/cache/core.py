@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 Metacloud
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -22,6 +20,7 @@ from dogpile.cache import util
 
 from keystone import config
 from keystone import exception
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import importutils
 from keystone.openstack.common import log
 
@@ -35,6 +34,11 @@ dogpile.cache.register_backend(
     'keystone.common.cache.noop',
     'keystone.common.cache.backends.noop',
     'NoopCacheBackend')
+
+dogpile.cache.register_backend(
+    'keystone.cache.mongo',
+    'keystone.common.cache.backends.mongo',
+    'MongoCacheBackend')
 
 
 class DebugProxy(proxy.ProxyBackend):

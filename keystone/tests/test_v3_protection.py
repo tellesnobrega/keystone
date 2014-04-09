@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 # Copyright 2013 IBM Corp.
 #
@@ -59,7 +57,7 @@ class IdentityTestProtectedCase(test_v3.RestfulTestCase):
         self.addCleanup(rules.reset)
         rules.reset()
         _unused, self.tmpfilename = tempfile.mkstemp()
-        self.opt(policy_file=self.tmpfilename)
+        self.config_fixture.config(policy_file=self.tmpfilename)
 
         # A default auth request we can use - un-scoped user token
         self.auth = self.build_authentication_request(
@@ -67,6 +65,7 @@ class IdentityTestProtectedCase(test_v3.RestfulTestCase):
             password=self.user1['password'])
 
     def load_sample_data(self):
+        self._populate_default_domain()
         # Start by creating a couple of domains
         self.domainA = self.new_domain_ref()
         self.assignment_api.create_domain(self.domainA['id'], self.domainA)
@@ -271,7 +270,7 @@ class IdentityTestProtectedCase(test_v3.RestfulTestCase):
         r = self.get(url_by_name, auth=self.auth)
         # We should only get back one user, the one in DomainA
         id_list = self._get_id_list_from_ref_list(r.result.get('users'))
-        self.assertEqual(len(id_list), 1)
+        self.assertEqual(1, len(id_list))
         self.assertIn(self.user1['id'], id_list)
 
         # Now try for domainB, which should fail
@@ -301,7 +300,7 @@ class IdentityTestProtectedCase(test_v3.RestfulTestCase):
         r = self.get(url_by_name, auth=self.auth)
         # We should only get back two groups, the ones in DomainA
         id_list = self._get_id_list_from_ref_list(r.result.get('groups'))
-        self.assertEqual(len(id_list), 2)
+        self.assertEqual(2, len(id_list))
         self.assertIn(self.group1['id'], id_list)
         self.assertIn(self.group2['id'], id_list)
 
@@ -334,7 +333,7 @@ class IdentityTestProtectedCase(test_v3.RestfulTestCase):
         # We should only get back one user, the one in DomainA that matches
         # the name supplied
         id_list = self._get_id_list_from_ref_list(r.result.get('groups'))
-        self.assertEqual(len(id_list), 1)
+        self.assertEqual(1, len(id_list))
         self.assertIn(self.group2['id'], id_list)
 
 
@@ -369,10 +368,12 @@ class IdentityTestv3CloudPolicySample(test_v3.RestfulTestCase):
         # Finally, switch to the v3 sample policy file
         self.addCleanup(rules.reset)
         rules.reset()
-        self.opt(policy_file=tests.dirs.etc('policy.v3cloudsample.json'))
+        self.config_fixture.config(
+            policy_file=tests.dirs.etc('policy.v3cloudsample.json'))
 
     def load_sample_data(self):
         # Start by creating a couple of domains
+        self._populate_default_domain()
         self.domainA = self.new_domain_ref()
         self.assignment_api.create_domain(self.domainA['id'], self.domainA)
         self.domainB = self.new_domain_ref()
@@ -587,6 +588,11 @@ class IdentityTestv3CloudPolicySample(test_v3.RestfulTestCase):
             domain_id=self.domainA['id'])
 
         self._test_grants('domains', self.domainA['id'])
+
+        # Check that with such a token we cannot modify grants on a
+        # different domain
+        self._test_grants('domains', self.domainB['id'],
+                          expected=exception.ForbiddenAction.code)
 
     def test_domain_grants_by_cloud_admin(self):
         # Test domain grants with a cloud admin. This user should be

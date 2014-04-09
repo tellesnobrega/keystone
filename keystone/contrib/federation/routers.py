@@ -1,6 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -46,6 +43,14 @@ class FederationExtension(wsgi.ExtensionRouter):
         GET /OS-FEDERATION/mappings/$mapping_id
         DELETE /OS-FEDERATION/mappings/$mapping_id
 
+        GET /OS-FEDERATION/projects
+        GET /OS-FEDERATION/domains
+
+        GET /OS-FEDERATION/identity_providers/$identity_provider/
+            protocols/$protocol/auth
+        POST /OS-FEDERATION/identity_providers/$identity_provider/
+            protocols/$protocol/auth
+
     """
 
     def _construct_url(self, suffix):
@@ -55,9 +60,12 @@ class FederationExtension(wsgi.ExtensionRouter):
         # This is needed for dependency injection
         # it loads the Federation driver which registers it as a dependency.
         federation.Manager()
+        auth_controller = controllers.Auth()
         idp_controller = controllers.IdentityProvider()
         protocol_controller = controllers.FederationProtocol()
         mapping_controller = controllers.MappingController()
+        project_controller = controllers.ProjectV3()
+        domain_controller = controllers.DomainV3()
 
         # Identity Provider CRUD operations
 
@@ -159,3 +167,23 @@ class FederationExtension(wsgi.ExtensionRouter):
             controller=mapping_controller,
             action='update_mapping',
             conditions=dict(method=['PATCH']))
+
+        mapper.connect(
+            self._construct_url('domains'),
+            controller=domain_controller,
+            action='list_domains_for_groups',
+            conditions=dict(method=['GET']))
+
+        mapper.connect(
+            self._construct_url('projects'),
+            controller=project_controller,
+            action='list_projects_for_groups',
+            conditions=dict(method=['GET']))
+
+        mapper.connect(
+            self._construct_url('identity_providers/'
+                                '{identity_provider}/protocols/'
+                                '{protocol}/auth'),
+            controller=auth_controller,
+            action='federated_authentication',
+            conditions=dict(method=['GET', 'POST']))

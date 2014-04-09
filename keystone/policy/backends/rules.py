@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright (c) 2011 OpenStack, LLC.
 # All Rights Reserved.
 #
@@ -22,6 +20,7 @@ import os.path
 from keystone.common import utils
 from keystone import config
 from keystone import exception
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
 from keystone.openstack.common import policy as common_policy
 from keystone import policy

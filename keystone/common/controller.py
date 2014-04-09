@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -24,16 +22,30 @@ from keystone.common import utils
 from keystone.common import wsgi
 from keystone import config
 from keystone import exception
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
-from keystone.openstack.common import versionutils
 
 
 LOG = log.getLogger(__name__)
 CONF = config.CONF
 
-v2_deprecated = versionutils.deprecated(what='v2 API',
-                                        as_of=versionutils.deprecated.ICEHOUSE,
-                                        in_favor_of='v3 API')
+
+def v2_deprecated(f):
+    """No-op decorator in preparation for deprecating Identity API v2.
+
+    This is a placeholder for the pending deprecation of v2. The implementation
+    of this decorator can be replaced with::
+
+        from keystone.openstack.common import versionutils
+
+
+        v2_deprecated = versionutils.deprecated(
+            what='v2 API',
+            as_of=versionutils.deprecated.JUNO,
+            in_favor_of='v3 API')
+
+    """
+    return f
 
 
 def _build_policy_check_credentials(self, action, context, kwargs):
@@ -51,6 +63,13 @@ def _build_policy_check_credentials(self, action, context, kwargs):
     try:
         LOG.debug(_('RBAC: building auth context from the incoming '
                     'auth token'))
+        # TODO(ayoung): These two functions return the token in different
+        # formats.  However, the call
+        # to get_token hits the caching layer, and does not validate the
+        # token.  This should be reduced to one call
+        if not CONF.token.revoke_by_id:
+            self.token_api.token_provider_api.validate_token(
+                context['token_id'])
         token_ref = self.token_api.get_token(context['token_id'])
     except exception.TokenNotFound:
         LOG.warning(_('RBAC: Invalid token'))
@@ -272,6 +291,13 @@ class V3Controller(wsgi.Application):
     the API. This is required for supporting self-referential links,
     pagination, etc.
 
+    Class parameters:
+
+    * `_mutable_parameters` - set of parameters that can be changed by users.
+                              Usually used by cls.check_immutable_params()
+    * `_public_parameters` - set of parameters that are exposed to the user.
+                             Usually used by cls.filter_params()
+
     """
 
     collection_name = 'entities'
@@ -279,28 +305,21 @@ class V3Controller(wsgi.Application):
     get_member_from_driver = None
 
     @classmethod
-    def base_url(cls, path=None):
-        endpoint = CONF.public_endpoint % CONF
+    def base_url(cls, context, path=None):
+        endpoint = super(V3Controller, cls).base_url(context, 'public')
+        if not path:
+            path = cls.collection_name
 
-        # allow a missing trailing slash in the config
-        if endpoint[-1] != '/':
-            endpoint += '/'
-
-        url = endpoint + 'v3'
-
-        if path:
-            return url + path
-        else:
-            return url + '/' + cls.collection_name
+        return '%s/%s/%s' % (endpoint, 'v3', path.lstrip('/'))
 
     @classmethod
-    def _add_self_referential_link(cls, ref):
+    def _add_self_referential_link(cls, context, ref):
         ref.setdefault('links', {})
-        ref['links']['self'] = cls.base_url() + '/' + ref['id']
+        ref['links']['self'] = cls.base_url(context) + '/' + ref['id']
 
     @classmethod
     def wrap_member(cls, context, ref):
-        cls._add_self_referential_link(ref)
+        cls._add_self_referential_link(context, ref)
         return {cls.member_name: ref}
 
     @classmethod
@@ -309,16 +328,16 @@ class V3Controller(wsgi.Application):
 
         Returns the wrapped collection, which includes:
         - Executing any filtering not already carried out
-        - Paginating if necessary
+        - Truncate to a set limit if necessary
         - Adds 'self' links in every member
         - Adds 'next', 'self' and 'prev' links for the whole collection.
 
         :param context: the current context, containing the original url path
                         and query string
         :param refs: the list of members of the collection
-        :param hints: list hints, containing any relevant
-                      filters. Any filters already satisfied by drivers
-                      will have been removed
+        :param hints: list hints, containing any relevant filters and limit.
+                      Any filters already satisfied by managers will have been
+                      removed
         """
         # Check if there are any filters in hints that were not
         # handled by the drivers. The driver will not have paginated or
@@ -328,7 +347,7 @@ class V3Controller(wsgi.Application):
         if hints is not None:
             refs = cls.filter_by_attributes(refs, hints)
 
-        refs = cls.paginate(context, refs)
+        list_limited, refs = cls.limit(refs, hints)
 
         for ref in refs:
             cls.wrap_member(context, ref)
@@ -336,19 +355,47 @@ class V3Controller(wsgi.Application):
         container = {cls.collection_name: refs}
         container['links'] = {
             'next': None,
-            'self': cls.base_url(path=context['path']),
+            'self': cls.base_url(context, path=context['path']),
             'previous': None}
+
+        if list_limited:
+            container['truncated'] = True
+
         return container
 
     @classmethod
-    def paginate(cls, context, refs):
-        """Paginates a list of references by page & per_page query strings."""
-        # FIXME(dolph): client needs to support pagination first
-        return refs
+    def limit(cls, refs, hints):
+        """Limits a list of entities.
 
-        page = context['query_string'].get('page', 1)
-        per_page = context['query_string'].get('per_page', 30)
-        return refs[per_page * (page - 1):per_page * page]
+        The underlying driver layer may have already truncated the collection
+        for us, but in case it was unable to handle truncation we check here.
+
+        :param refs: the list of members of the collection
+        :param hints: hints, containing, among other things, the limit
+                      requested
+
+        :returns: boolean indicating whether the list was truncated, as well
+                  as the list of (truncated if necessary) entities.
+
+        """
+        NOT_LIMITED = False
+        LIMITED = True
+
+        if hints is None or hints.get_limit() is None:
+            # No truncation was requested
+            return NOT_LIMITED, refs
+
+        list_limit = hints.get_limit()
+        if list_limit.get('truncated', False):
+            # The driver did truncate the list
+            return LIMITED, refs
+
+        if len(refs) > list_limit['limit']:
+            # The driver layer wasn't able to truncate it for us, so we must
+            # do it here
+            return LIMITED, refs[:list_limit['limit']]
+
+        return NOT_LIMITED, refs
 
     @classmethod
     def filter_by_attributes(cls, refs, hints):
@@ -475,6 +522,28 @@ class V3Controller(wsgi.Application):
         if 'id' in ref and ref['id'] != value:
             raise exception.ValidationError('Cannot change ID')
 
+    def _require_matching_domain_id(self, ref_id, ref, get_member):
+        """Ensure the current domain ID matches the reference one, if any.
+
+        Provided we want domain IDs to be immutable, check whether any
+        domain_id specified in the ref dictionary matches the existing
+        domain_id for this entity.
+
+        :param ref_id: the ID of the entity
+        :param ref: the dictionary of new values proposed for this entity
+        :param get_member: The member function to call to get the current
+                           entity
+        :raises: :class:`keystone.exception.ValidationError`
+
+        """
+        # TODO(henry-nash): It might be safer and more efficient to do this
+        # check in the managers affected, so look to migrate this check to
+        # there in the future.
+        if CONF.domain_id_immutable and 'domain_id' in ref:
+            existing_ref = get_member(ref_id)
+            if ref['domain_id'] != existing_ref['domain_id']:
+                raise exception.ValidationError(_('Cannot change Domain ID'))
+
     def _assign_unique_id(self, ref):
         """Generates and assigns a unique identifer to a reference."""
         ref = ref.copy()
@@ -545,3 +614,45 @@ class V3Controller(wsgi.Application):
                                     action,
                                     authorization.flatten(policy_dict))
             LOG.debug(_('RBAC: Authorization granted'))
+
+    @classmethod
+    def check_immutable_params(cls, ref):
+        """Raise exception when disallowed parameter is in ref.
+
+        Check whether the ref dictionary representing a request has only
+        mutable parameters included. If not, raise an exception. This method
+        checks only root-level keys from a ref dictionary.
+
+        :param ref: a dictionary representing deserialized request to be
+                    stored
+        :raises: :class:`keystone.exception.ImmutableAttributeError`
+
+        """
+        ref_keys = set(ref.keys())
+        blocked_keys = ref_keys.difference(cls._mutable_parameters)
+
+        if not blocked_keys:
+            # No immutable parameters changed
+            return
+
+        exception_args = {'target': cls.__name__,
+                          'attribute': blocked_keys.pop()}
+        raise exception.ImmutableAttributeError(**exception_args)
+
+    @classmethod
+    def filter_params(cls, ref):
+        """Remove unspecified parameters from the dictionary.
+
+        This function removes unspecified parameters from the dictionary. See
+        check_immutable_parameters for corresponding function that raises
+        exceptions. This method checks only root-level keys from a ref
+        dictionary.
+
+        :param ref: a dictionary representing deserialized response to be
+                    serialized
+        """
+        ref_keys = set(ref.keys())
+        blocked_keys = ref_keys - cls._public_parameters
+        for blocked_param in blocked_keys:
+            del ref[blocked_param]
+        return ref

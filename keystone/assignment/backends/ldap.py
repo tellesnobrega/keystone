@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012-2013 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -27,6 +25,7 @@ from keystone.common import models
 from keystone import config
 from keystone import exception
 from keystone.identity.backends import ldap as ldap_identity
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
 
 
@@ -42,9 +41,9 @@ class Assignment(assignment.Driver):
         self.LDAP_PASSWORD = CONF.ldap.password
         self.suffix = CONF.ldap.suffix
 
-        #These are the only deep dependency from assignment back
-        #to identity.  The assumption is that if you are using
-        #LDAP for assignments, you are using it for Id as well.
+        # These are the only deep dependency from assignment back
+        # to identity.  The assumption is that if you are using
+        # LDAP for assignments, you are using it for Id as well.
         self.user = ldap_identity.UserApi(CONF)
         self.group = ldap_identity.GroupApi(CONF)
 
@@ -109,7 +108,7 @@ class Assignment(assignment.Driver):
                     if a.user_dn.upper() == group_dn.upper()]
 
         if domain_id is not None:
-            msg = 'Domain metadata not supported by LDAP'
+            msg = _('Domain metadata not supported by LDAP')
             raise exception.NotImplemented(message=msg)
         if group_id is None and user_id is None:
             return {}
@@ -144,6 +143,15 @@ class Assignment(assignment.Driver):
         # domain_id before we return the list.
         return [self._set_default_domain(x) for x in
                 self.project.get_user_projects(user_dn, associations)]
+
+    def get_roles_for_groups(self, group_ids, project_id=None, domain_id=None):
+        raise exception.NotImplemented()
+
+    def list_projects_for_groups(self, group_ids):
+        raise exception.NotImplemented()
+
+    def list_domains_for_groups(self, group_ids):
+        raise exception.NotImplemented()
 
     def list_user_ids_for_project(self, tenant_id):
         self.get_project(tenant_id)
@@ -182,9 +190,6 @@ class Assignment(assignment.Driver):
                                     role_dn=role_dn,
                                     tenant_dn=tenant_dn)
 
-    def _create_metadata(self, user_id, tenant_id, metadata):
-        return {}
-
     def create_role(self, role_id, role):
         self.role.check_allow_create()
         try:
@@ -192,7 +197,7 @@ class Assignment(assignment.Driver):
         except exception.NotFound:
             pass
         else:
-            msg = 'Duplicate ID, %s.' % role_id
+            msg = _('Duplicate ID, %s.') % role_id
             raise exception.Conflict(type='role', details=msg)
 
         try:
@@ -200,7 +205,7 @@ class Assignment(assignment.Driver):
         except exception.NotFound:
             pass
         else:
-            msg = 'Duplicate name, %s.' % role['name']
+            msg = _('Duplicate name, %s.') % role['name']
             raise exception.Conflict(type='role', details=msg)
 
         return self.role.create(role)
@@ -240,9 +245,9 @@ class Assignment(assignment.Driver):
 
     def create_domain(self, domain_id, domain):
         if domain_id == CONF.identity.default_domain_id:
-            msg = 'Duplicate ID, %s.' % domain_id
+            msg = _('Duplicate ID, %s.') % domain_id
             raise exception.Conflict(type='domain', details=msg)
-        raise exception.Forbidden('Domains are read-only against LDAP')
+        raise exception.Forbidden(_('Domains are read-only against LDAP'))
 
     def get_domain(self, domain_id):
         self._validate_default_domain_id(domain_id)
@@ -250,16 +255,16 @@ class Assignment(assignment.Driver):
 
     def update_domain(self, domain_id, domain):
         self._validate_default_domain_id(domain_id)
-        raise exception.Forbidden('Domains are read-only against LDAP')
+        raise exception.Forbidden(_('Domains are read-only against LDAP'))
 
     def delete_domain(self, domain_id):
         self._validate_default_domain_id(domain_id)
-        raise exception.Forbidden('Domains are read-only against LDAP')
+        raise exception.Forbidden(_('Domains are read-only against LDAP'))
 
     def list_domains(self, hints):
         return [assignment.calc_default_domain()]
 
-#Bulk actions on User From identity
+# Bulk actions on User From identity
     def delete_user(self, user_id):
         user_dn = self.user._id_to_dn(user_id)
         for ref in self.role.list_global_roles_for_user(user_dn):
@@ -275,8 +280,8 @@ class Assignment(assignment.Driver):
             self.project.remove_user(user.tenant_id,
                                      self.user._id_to_dn(user_id))
 
-    #LDAP assignments only supports LDAP identity.  Assignments under identity
-    #are already deleted
+    # LDAP assignments only supports LDAP identity.  Assignments under
+    # identity are already deleted
     def delete_group(self, group_id):
         if not self.group.subtree_delete_enabled:
             # TODO(spzala): this is only placeholder for group and domain
@@ -289,7 +294,7 @@ class Assignment(assignment.Driver):
                     conn = self.group.get_connection()
                     roles = conn.search_s(dn, ldap.SCOPE_ONELEVEL,
                                           query, ['%s' % '1.1'])
-                    for role_dn, _ in roles:
+                    for role_dn, i in roles:
                         conn.delete_s(role_dn)
                 except ldap.NO_SUCH_OBJECT:
                     pass
@@ -390,7 +395,10 @@ class Assignment(assignment.Driver):
                                             inherited_to_projects)]
 
     def get_domain_by_name(self, domain_name):
-        raise exception.NotImplemented()
+        default_domain = assignment.calc_default_domain()
+        if domain_name != default_domain['name']:
+            raise exception.DomainNotFound(domain_id=domain_name)
+        return default_domain
 
     def list_role_assignments(self):
         role_assignments = []
@@ -439,8 +447,8 @@ class ProjectApi(common_ldap.EnabledEmuMixIn, common_ldap.BaseLdap):
             project_ids.add(self._dn_to_id(assoc.project_dn))
         projects = []
         for project_id in project_ids:
-            #slower to get them one at a time, but a huge list could blow out
-            #the connection.  This is the safer way
+            # slower to get them one at a time, but a huge list could blow out
+            # the connection.  This is the safer way
             projects.append(self.get(project_id))
         return projects
 
@@ -543,8 +551,9 @@ class RoleApi(common_ldap.BaseLdap):
             conn.modify_s(role_dn, [(ldap.MOD_ADD,
                                      self.member_attribute, user_dn)])
         except ldap.TYPE_OR_VALUE_EXISTS:
-            msg = ('User %s already has role %s in tenant %s'
-                   % (user_id, role_id, tenant_id))
+            msg = (_('User %(user_id)s already has role %(role_id)s in '
+                     'tenant %(tenant_id)s') %
+                   dict(user_id=user_id, role_id=role_id, tenant_id=tenant_id))
             raise exception.Conflict(type='role grant', details=msg)
         except ldap.NO_SUCH_OBJECT:
             if tenant_id is None or self.get(role_id) is None:
@@ -624,10 +633,10 @@ class RoleApi(common_ldap.BaseLdap):
 
         res = []
         for role_dn, _ in roles:
-            #ldap.dn.dn2str returns an array, where the first
-            #element is the first segment.
-            #For a role assignment, this contains the role ID,
-            #The remainder is the DN of the tenant.
+            # ldap.dn.dn2str returns an array, where the first
+            # element is the first segment.
+            # For a role assignment, this contains the role ID,
+            # The remainder is the DN of the tenant.
             tenant = ldap.dn.str2dn(role_dn)
             tenant.pop(0)
             tenant_dn = ldap.dn.dn2str(tenant)
@@ -655,7 +664,7 @@ class RoleApi(common_ldap.BaseLdap):
     def update(self, role_id, role):
         try:
             old_name = self.get_by_name(role['name'])
-            raise exception.Conflict('Cannot duplicate name %s' % old_name)
+            raise exception.Conflict(_('Cannot duplicate name %s') % old_name)
         except exception.NotFound:
             pass
         return super(RoleApi, self).update(role_id, role)
@@ -698,6 +707,16 @@ class RoleApi(common_ldap.BaseLdap):
             # object.
             tenant_dn = ldap.dn.dn2str(tenant)
             for user_dn in role[self.member_attribute]:
+                # NOTE(nkinder): Ideally, this comparison would be aware of the
+                # Distinguished Name LDAP syntax. Since Keystone is responsible
+                # for setting the dumb member DN, we are relatively sure that
+                # it is returned in the same form. We still need to do a case
+                # insensitive comparison since attribute names will be upper
+                # case for AD. We already do this elsewhere in the LDAP
+                # driver, so it's OK until we decide to become syntax aware.
+                if (self.use_dumb_member and
+                        user_dn.lower() == self.dumb_member.lower()):
+                    continue
                 res.append(UserRoleAssociation(
                            user_dn=user_dn,
                            role_dn=role_dn,

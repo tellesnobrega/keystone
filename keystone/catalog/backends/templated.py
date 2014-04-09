@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundationc
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -22,6 +20,7 @@ from keystone.catalog.backends import kvs
 from keystone.catalog import core
 from keystone import config
 from keystone import exception
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
 from keystone.openstack.common import versionutils
 

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,24 +12,93 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
+import uuid
+
 from keystone.tests import test_v3
 
 
 class CatalogTestCase(test_v3.RestfulTestCase):
     """Test service & endpoint CRUD."""
 
-    def setUp(self):
-        super(CatalogTestCase, self).setUp()
-
     # region crud tests
 
+    def test_create_region_with_id(self):
+        """Call ``PUT /regions/{region_id}`` w/o an ID in the request body."""
+        ref = self.new_region_ref()
+        region_id = ref.pop('id')
+        r = self.put(
+            '/regions/%s' % region_id,
+            body={'region': ref},
+            expected_status=201)
+        self.assertValidRegionResponse(r, ref)
+        # Double-check that the region ID was kept as-is and not
+        # populated with a UUID, as is the case with POST /v3/regions
+        self.assertEqual(region_id, r.json['region']['id'])
+
+    def test_create_region_with_matching_ids(self):
+        """Call ``PUT /regions/{region_id}`` with an ID in the request body."""
+        ref = self.new_region_ref()
+        region_id = ref['id']
+        r = self.put(
+            '/regions/%s' % region_id,
+            body={'region': ref},
+            expected_status=201)
+        self.assertValidRegionResponse(r, ref)
+        # Double-check that the region ID was kept as-is and not
+        # populated with a UUID, as is the case with POST /v3/regions
+        self.assertEqual(region_id, r.json['region']['id'])
+
+    def test_create_region_with_duplicate_id(self):
+        """Call ``PUT /regions/{region_id}``."""
+        ref = dict(description="my region")
+        self.put(
+            '/regions/myregion',
+            body={'region': ref}, expected_status=201)
+        # Create region again with duplicate id
+        self.put(
+            '/regions/myregion',
+            body={'region': ref}, expected_status=409)
+
     def test_create_region(self):
-        """Call ``POST /regions``."""
+        """Call ``POST /regions`` with an ID in the request body."""
+        # the ref will have an ID defined on it
         ref = self.new_region_ref()
         r = self.post(
             '/regions',
             body={'region': ref})
-        return self.assertValidRegionResponse(r, ref)
+        self.assertValidRegionResponse(r, ref)
+
+        # we should be able to get the region, having defined the ID ourselves
+        r = self.get(
+            '/regions/%(region_id)s' % {
+                'region_id': ref['id']})
+        self.assertValidRegionResponse(r, ref)
+
+    def test_create_region_without_id(self):
+        """Call ``POST /regions`` without an ID in the request body."""
+        ref = self.new_region_ref()
+
+        # instead of defining the ID ourselves...
+        del ref['id']
+
+        # let the service define the ID
+        r = self.post(
+            '/regions',
+            body={'region': ref},
+            expected_status=201)
+        self.assertValidRegionResponse(r, ref)
+
+    def test_create_region_with_conflicting_ids(self):
+        """Call ``PUT /regions/{region_id}`` with conflicting region IDs."""
+        # the region ref is created with an ID
+        ref = self.new_region_ref()
+
+        # but instead of using that ID, make up a new, conflicting one
+        self.put(
+            '/regions/%s' % uuid.uuid4().hex,
+            body={'region': ref},
+            expected_status=400)
 
     def test_list_regions(self):
         """Call ``GET /regions``."""
@@ -71,7 +138,56 @@ class CatalogTestCase(test_v3.RestfulTestCase):
         r = self.post(
             '/services',
             body={'service': ref})
-        return self.assertValidServiceResponse(r, ref)
+        self.assertValidServiceResponse(r, ref)
+
+    def test_create_service_no_enabled(self):
+        """Call ``POST /services``."""
+        ref = self.new_service_ref()
+        del ref['enabled']
+        r = self.post(
+            '/services',
+            body={'service': ref})
+        ref['enabled'] = True
+        self.assertValidServiceResponse(r, ref)
+        self.assertIs(True, r.result['service']['enabled'])
+
+    def test_create_service_enabled_false(self):
+        """Call ``POST /services``."""
+        ref = self.new_service_ref()
+        ref['enabled'] = False
+        r = self.post(
+            '/services',
+            body={'service': ref})
+        self.assertValidServiceResponse(r, ref)
+        self.assertIs(False, r.result['service']['enabled'])
+
+    def test_create_service_enabled_true(self):
+        """Call ``POST /services``."""
+        ref = self.new_service_ref()
+        ref['enabled'] = True
+        r = self.post(
+            '/services',
+            body={'service': ref})
+        self.assertValidServiceResponse(r, ref)
+        self.assertIs(True, r.result['service']['enabled'])
+
+    def test_create_service_enabled_str_true(self):
+        """Call ``POST /services``."""
+        ref = self.new_service_ref()
+        ref['enabled'] = 'True'
+        self.post('/services', body={'service': ref}, expected_status=400)
+
+    def test_create_service_enabled_str_false(self):
+        """Call ``POST /services``."""
+        ref = self.new_service_ref()
+        ref['enabled'] = 'False'
+        self.post('/services', body={'service': ref}, expected_status=400)
+
+    def test_create_service_enabled_str_random(self):
+        """Call ``POST /services``."""
+        ref = self.new_service_ref()
+        ref['enabled'] = 'puppies'
+        self.post('/services', body={'service': ref}, expected_status=400)
 
     def test_list_services(self):
         """Call ``GET /services``."""
@@ -115,21 +231,73 @@ class CatalogTestCase(test_v3.RestfulTestCase):
         r = self.get('/endpoints', content_type='xml')
         self.assertValidEndpointListResponse(r, ref=self.endpoint)
 
-    def test_create_endpoint(self):
+    def test_create_endpoint_no_enabled(self):
         """Call ``POST /endpoints``."""
         ref = self.new_endpoint_ref(service_id=self.service_id)
         r = self.post(
             '/endpoints',
             body={'endpoint': ref})
+        ref['enabled'] = True
         self.assertValidEndpointResponse(r, ref)
 
+    def test_create_endpoint_enabled_true(self):
+        """Call ``POST /endpoints`` with enabled: true."""
+        ref = self.new_endpoint_ref(service_id=self.service_id,
+                                    enabled=True)
+        r = self.post(
+            '/endpoints',
+            body={'endpoint': ref})
+        self.assertValidEndpointResponse(r, ref)
+
+    def test_create_endpoint_enabled_false(self):
+        """Call ``POST /endpoints`` with enabled: false."""
+        ref = self.new_endpoint_ref(service_id=self.service_id,
+                                    enabled=False)
+        r = self.post(
+            '/endpoints',
+            body={'endpoint': ref})
+        self.assertValidEndpointResponse(r, ref)
+
+    def test_create_endpoint_enabled_str_true(self):
+        """Call ``POST /endpoints`` with enabled: 'True'."""
+        ref = self.new_endpoint_ref(service_id=self.service_id,
+                                    enabled='True')
+        self.post(
+            '/endpoints',
+            body={'endpoint': ref},
+            expected_status=400)
+
+    def test_create_endpoint_enabled_str_false(self):
+        """Call ``POST /endpoints`` with enabled: 'False'."""
+        ref = self.new_endpoint_ref(service_id=self.service_id,
+                                    enabled='False')
+        self.post(
+            '/endpoints',
+            body={'endpoint': ref},
+            expected_status=400)
+
+    def test_create_endpoint_enabled_str_random(self):
+        """Call ``POST /endpoints`` with enabled: 'puppies'."""
+        ref = self.new_endpoint_ref(service_id=self.service_id,
+                                    enabled='puppies')
+        self.post(
+            '/endpoints',
+            body={'endpoint': ref},
+            expected_status=400)
+
     def assertValidErrorResponse(self, response):
-        self.assertTrue(response.status_code in [400])
+        self.assertIn(response.status_code, [400, 409])
 
     def test_create_endpoint_400(self):
         """Call ``POST /endpoints``."""
         ref = self.new_endpoint_ref(service_id=self.service_id)
         ref["region"] = "0" * 256
+        self.post('/endpoints', body={'endpoint': ref}, expected_status=400)
+
+    def test_create_endpoint_with_empty_url(self):
+        """Call ``POST /endpoints``."""
+        ref = self.new_endpoint_ref(service_id=self.service_id)
+        del ref["url"]
         self.post('/endpoints', body={'endpoint': ref}, expected_status=400)
 
     def test_get_endpoint(self):
@@ -147,7 +315,50 @@ class CatalogTestCase(test_v3.RestfulTestCase):
             '/endpoints/%(endpoint_id)s' % {
                 'endpoint_id': self.endpoint_id},
             body={'endpoint': ref})
+        ref['enabled'] = True
         self.assertValidEndpointResponse(r, ref)
+
+    def test_update_endpoint_enabled_true(self):
+        """Call ``PATCH /endpoints/{endpoint_id}`` with enabled: True."""
+        r = self.patch(
+            '/endpoints/%(endpoint_id)s' % {
+                'endpoint_id': self.endpoint_id},
+            body={'endpoint': {'enabled': True}})
+        self.assertValidEndpointResponse(r, self.endpoint)
+
+    def test_update_endpoint_enabled_false(self):
+        """Call ``PATCH /endpoints/{endpoint_id}`` with enabled: False."""
+        r = self.patch(
+            '/endpoints/%(endpoint_id)s' % {
+                'endpoint_id': self.endpoint_id},
+            body={'endpoint': {'enabled': False}})
+        exp_endpoint = copy.copy(self.endpoint)
+        exp_endpoint['enabled'] = False
+        self.assertValidEndpointResponse(r, exp_endpoint)
+
+    def test_update_endpoint_enabled_str_true(self):
+        """Call ``PATCH /endpoints/{endpoint_id}`` with enabled: 'True'."""
+        self.patch(
+            '/endpoints/%(endpoint_id)s' % {
+                'endpoint_id': self.endpoint_id},
+            body={'endpoint': {'enabled': 'True'}},
+            expected_status=400)
+
+    def test_update_endpoint_enabled_str_false(self):
+        """Call ``PATCH /endpoints/{endpoint_id}`` with enabled: 'False'."""
+        self.patch(
+            '/endpoints/%(endpoint_id)s' % {
+                'endpoint_id': self.endpoint_id},
+            body={'endpoint': {'enabled': 'False'}},
+            expected_status=400)
+
+    def test_update_endpoint_enabled_str_random(self):
+        """Call ``PATCH /endpoints/{endpoint_id}`` with enabled: 'kitties'."""
+        self.patch(
+            '/endpoints/%(endpoint_id)s' % {
+                'endpoint_id': self.endpoint_id},
+            body={'endpoint': {'enabled': 'kitties'}},
+            expected_status=400)
 
     def test_delete_endpoint(self):
         """Call ``DELETE /endpoints/{endpoint_id}``."""

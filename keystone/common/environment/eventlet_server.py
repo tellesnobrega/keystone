@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
@@ -26,6 +24,7 @@ import eventlet
 import eventlet.wsgi
 import greenlet
 
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
 
 
@@ -119,7 +118,7 @@ class Server(object):
         logger = log.getLogger('eventlet.wsgi.server')
         try:
             eventlet.wsgi.server(socket, application, custom_pool=self.pool,
-                                 log=log.WritableLogger(logger))
+                                 log=log.WritableLogger(logger), debug=False)
         except Exception:
             LOG.exception(_('Server error'))
             raise

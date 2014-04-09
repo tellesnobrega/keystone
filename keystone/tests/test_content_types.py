@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -196,6 +194,28 @@ class CoreApiTests(object):
             token=token)
         self.assertValidAuthenticationResponse(r)
 
+    def test_remove_role_revokes_token(self):
+        self.md_foobar = self.assignment_api.add_role_to_user_and_project(
+            self.user_foo['id'],
+            self.tenant_service['id'],
+            self.role_service['id'])
+
+        token = self.get_scoped_token(tenant_id='service')
+        r = self.admin_request(
+            path='/v2.0/tokens/%s' % token,
+            token=token)
+        self.assertValidAuthenticationResponse(r)
+
+        self.assignment_api.remove_role_from_user_and_project(
+            self.user_foo['id'],
+            self.tenant_service['id'],
+            self.role_service['id'])
+
+        r = self.admin_request(
+            path='/v2.0/tokens/%s' % token,
+            token=token,
+            expected_status=401)
+
     def test_validate_token_belongs_to(self):
         token = self.get_scoped_token()
         path = ('/v2.0/tokens/%s?belongsTo=%s' % (token,
@@ -253,15 +273,14 @@ class CoreApiTests(object):
         self.assertValidTenantResponse(r)
 
     def test_get_user_roles(self):
-        self.skipTest('Blocked by bug 933565')
+        # The server responds with a 501 Not Implemented. See bug 933565.
 
         token = self.get_scoped_token()
-        r = self.admin_request(
+        self.admin_request(
             path='/v2.0/users/%(user_id)s/roles' % {
                 'user_id': self.user_foo['id'],
             },
-            token=token)
-        self.assertValidRoleListResponse(r)
+            token=token, expected_status=501)
 
     def test_get_user_roles_with_tenant(self):
         token = self.get_scoped_token()
@@ -455,7 +474,7 @@ class CoreApiTests(object):
             },
             token=token,
             expected_status=200)
-        self.assertEqual(self._get_role_name(r.result), CONF.member_role_name)
+        self.assertEqual(CONF.member_role_name, self._get_role_name(r.result))
 
         # Create a new tenant
         r = self.admin_request(
@@ -495,7 +514,7 @@ class CoreApiTests(object):
             },
             token=token,
             expected_status=200)
-        self.assertEqual(self._get_role_name(r.result), '_member_')
+        self.assertEqual('_member_', self._get_role_name(r.result))
 
         # 'member_role' should not be in tenant_bar any more
         r = self.admin_request(
@@ -600,7 +619,7 @@ class CoreApiTests(object):
             },
             token=token,
             expected_status=200)
-        self.assertEqual(self._get_role_name(r.result), CONF.member_role_name)
+        self.assertEqual(CONF.member_role_name, self._get_role_name(r.result))
 
         # Update user's tenant with old tenant id
         r = self.admin_request(
@@ -624,7 +643,7 @@ class CoreApiTests(object):
             },
             token=token,
             expected_status=200)
-        self.assertEqual(self._get_role_name(r.result), '_member_')
+        self.assertEqual('_member_', self._get_role_name(r.result))
 
     def test_authenticating_a_user_with_no_password(self):
         token = self.get_scoped_token()
@@ -662,9 +681,17 @@ class CoreApiTests(object):
         r = self.public_request(
             path='/v2.0/tenants',
             expected_status=401)
-        self.assertEqual(r.headers.get('WWW-Authenticate'),
-                         'Keystone uri="%s"' % (
-                             CONF.public_endpoint % CONF))
+        self.assertEqual('Keystone uri="http://localhost"',
+                         r.headers.get('WWW-Authenticate'))
+
+    def test_www_authenticate_header_host(self):
+        test_url = 'http://%s:4187' % uuid.uuid4().hex
+        self.config_fixture.config(public_endpoint=test_url)
+        r = self.public_request(
+            path='/v2.0/tenants',
+            expected_status=401)
+        self.assertEqual('Keystone uri="%s"' % test_url,
+                         r.headers.get('WWW-Authenticate'))
 
 
 class LegacyV2UsernameTests(object):
@@ -707,7 +734,7 @@ class LegacyV2UsernameTests(object):
         self.assertValidUserResponse(r)
 
         user = self.get_user_from_response(r)
-        self.assertEqual(user.get('username'), fake_username)
+        self.assertEqual(fake_username, user.get('username'))
 
     def test_get_returns_username_from_extra(self):
         """The response for getting a user will contain the extra fields."""
@@ -722,7 +749,7 @@ class LegacyV2UsernameTests(object):
         self.assertValidUserResponse(r)
 
         user = self.get_user_from_response(r)
-        self.assertEqual(user.get('username'), fake_username)
+        self.assertEqual(fake_username, user.get('username'))
 
     def test_update_returns_new_username_when_adding_username(self):
         """The response for updating a user will contain the extra fields.
@@ -753,7 +780,7 @@ class LegacyV2UsernameTests(object):
         self.assertValidUserResponse(r)
 
         user = self.get_user_from_response(r)
-        self.assertEqual(user.get('username'), 'new_username')
+        self.assertEqual('new_username', user.get('username'))
 
     def test_update_returns_new_username_when_updating_username(self):
         """The response for updating a user will contain the extra fields.
@@ -783,7 +810,7 @@ class LegacyV2UsernameTests(object):
         self.assertValidUserResponse(r)
 
         user = self.get_user_from_response(r)
-        self.assertEqual(user.get('username'), 'new_username')
+        self.assertEqual('new_username', user.get('username'))
 
     def test_username_is_always_returned_create(self):
         """Username is set as the value of name if no username is provided.
@@ -937,7 +964,7 @@ class LegacyV2UsernameTests(object):
         self.assertValidUserResponse(r)
 
         user = self.get_user_from_response(r)
-        self.assertEqual(user.get('name'), new_username)
+        self.assertEqual(new_username, user.get('name'))
         self.assertEqual(user.get('name'), user.get('username'))
 
 
@@ -974,7 +1001,7 @@ class JsonTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
         return r.result['access']['token']['id']
 
     def assertNoRoles(self, r):
-        self.assertEqual(r['roles'], [])
+        self.assertEqual([], r['roles'])
 
     def assertValidErrorResponse(self, r):
         self.assertIsNotNone(r.result.get('error'))
@@ -1042,7 +1069,7 @@ class JsonTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
         if require_service_catalog:
             self.assertIsNotNone(serviceCatalog)
         if serviceCatalog is not None:
-            self.assertTrue(isinstance(serviceCatalog, list))
+            self.assertIsInstance(serviceCatalog, list)
             if require_service_catalog:
                 self.assertNotEmpty(serviceCatalog)
             for service in r.result['access']['serviceCatalog']:
@@ -1293,6 +1320,21 @@ class JsonTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
             expected_status=200)
 
 
+class RevokeApiJsonTestCase(JsonTestCase):
+    def config_overrides(self):
+        super(RevokeApiJsonTestCase, self).config_overrides()
+        self.config_fixture.config(
+            group='revoke',
+            driver='keystone.contrib.revoke.backends.kvs.Revoke')
+        self.config_fixture.config(
+            group='token',
+            provider='keystone.token.providers.pki.Provider',
+            revoke_by_id=False)
+
+    def test_fetch_revocation_list_admin_200(self):
+        self.skipTest('Revoke API disables revocation_list.')
+
+
 class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
     xmlns = 'http://docs.openstack.org/identity/api/v2.0'
     content_type = 'xml'
@@ -1310,7 +1352,7 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
         return r.get('id')
 
     def assertNoRoles(self, r):
-        self.assertEqual(len(r), 0)
+        self.assertEqual(0, len(r))
 
     def _get_token_id(self, r):
         return r.result.find(self._tag('token')).get('id')
@@ -1321,10 +1363,10 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
 
     def assertValidErrorResponse(self, r):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('error'))
+        self.assertEqual(self._tag('error'), xml.tag)
 
         self.assertValidError(xml)
-        self.assertEqual(xml.get('code'), str(r.status_code))
+        self.assertEqual(str(r.status_code), xml.get('code'))
 
     def assertValidExtension(self, extension, expected):
         super(XmlTestCase, self).assertValidExtension(extension)
@@ -1341,14 +1383,14 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
 
     def assertValidExtensionListResponse(self, r, expected):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('extensions'))
+        self.assertEqual(self._tag('extensions'), xml.tag)
         self.assertNotEmpty(xml.findall(self._tag('extension')))
         for ext in xml.findall(self._tag('extension')):
             self.assertValidExtension(ext, expected)
 
     def assertValidExtensionResponse(self, r, expected):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('extension'))
+        self.assertEqual(self._tag('extension'), xml.tag)
 
         self.assertValidExtension(xml, expected)
 
@@ -1371,7 +1413,7 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
 
     def assertValidMultipleChoiceResponse(self, r):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('versions'))
+        self.assertEqual(self._tag('versions'), xml.tag)
 
         self.assertNotEmpty(xml.findall(self._tag('version')))
         for version in xml.findall(self._tag('version')):
@@ -1379,13 +1421,13 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
 
     def assertValidVersionResponse(self, r):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('version'))
+        self.assertEqual(self._tag('version'), xml.tag)
 
         self.assertValidVersion(xml)
 
     def assertValidEndpointListResponse(self, r):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('endpoints'))
+        self.assertEqual(self._tag('endpoints'), xml.tag)
 
         self.assertNotEmpty(xml.findall(self._tag('endpoint')))
         for endpoint in xml.findall(self._tag('endpoint')):
@@ -1398,19 +1440,19 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
 
     def assertValidTenantResponse(self, r):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('tenant'))
+        self.assertEqual(self._tag('tenant'), xml.tag)
 
         self.assertValidTenant(xml)
 
     def assertValidUserResponse(self, r):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('user'))
+        self.assertEqual(self._tag('user'), xml.tag)
 
         self.assertValidUser(xml)
 
     def assertValidRoleListResponse(self, r):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('roles'))
+        self.assertEqual(self._tag('roles'), xml.tag)
 
         self.assertNotEmpty(r.result.findall(self._tag('role')))
         for role in r.result.findall(self._tag('role')):
@@ -1419,7 +1461,7 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
     def assertValidAuthenticationResponse(self, r,
                                           require_service_catalog=False):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('access'))
+        self.assertEqual(self._tag('access'), xml.tag)
 
         # validate token
         token = xml.find(self._tag('token'))
@@ -1466,7 +1508,7 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
 
     def assertValidTenantListResponse(self, r):
         xml = r.result
-        self.assertEqual(xml.tag, self._tag('tenants'))
+        self.assertEqual(self._tag('tenants'), xml.tag)
 
         self.assertNotEmpty(r.result)
         for tenant in r.result.findall(self._tag('tenant')):
@@ -1518,7 +1560,7 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
         self._from_content_type(r, 'json')
         self.assertIsNotNone(r.result.get('tenant'))
         self.assertValidTenant(r.result['tenant'])
-        self.assertEqual(r.result['tenant'].get('description'), "")
+        self.assertEqual("", r.result['tenant'].get('description'))
 
     def test_add_tenant_json(self):
         """Create a tenant without providing description field."""
@@ -1541,7 +1583,7 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
         self._from_content_type(r, 'json')
         self.assertIsNotNone(r.result.get('tenant'))
         self.assertValidTenant(r.result['tenant'])
-        self.assertEqual(r.result['tenant'].get('description'), "")
+        self.assertEqual("", r.result['tenant'].get('description'))
 
     def test_create_project_invalid_enabled_type_string(self):
         # Forbidden usage of string for 'enabled' field in JSON and XML
@@ -1628,3 +1670,26 @@ class XmlTestCase(RestfulTestCase, CoreApiTests, LegacyV2UsernameTests):
             token=token,
             expected_status=200,
             convert=False)
+
+    def test_remove_role_revokes_token(self):
+        self.md_foobar = self.assignment_api.add_role_to_user_and_project(
+            self.user_foo['id'],
+            self.tenant_service['id'],
+            self.role_service['id'])
+
+        token = self.get_scoped_token(tenant_id='service')
+        r = self.admin_request(
+            path='/v2.0/tokens/%s' % token,
+            token=token)
+        self.assertValidAuthenticationResponse(r)
+
+        self.assignment_api.remove_role_from_user_and_project(
+            self.user_foo['id'],
+            self.tenant_service['id'],
+            self.role_service['id'])
+
+        # TODO(ayoung): test fails due to XML problem
+#        r = self.admin_request(
+#            path='/v2.0/tokens/%s' % token,
+#            token=token,
+#            expected_status=401)

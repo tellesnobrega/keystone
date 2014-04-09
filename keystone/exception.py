@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -17,6 +15,7 @@
 import six
 
 from keystone.common import config
+from keystone.openstack.common.gettextutils import _
 from keystone.openstack.common import log
 from keystone.openstack.common import strutils
 
@@ -143,6 +142,11 @@ class AuthPluginException(Unauthorized):
         self.authentication = {}
 
 
+class MissingGroups(Unauthorized):
+    message_format = _("Unable to find valid groups while using "
+                       "mapping %(mapping_id)s")
+
+
 class AuthMethodNotSupported(AuthPluginException):
     message_format = _("Attempted to authenticate with an unsupported method.")
 
@@ -238,6 +242,10 @@ class TrustNotFound(NotFound):
     message_format = _("Could not find trust, %(trust_id)s.")
 
 
+class TrustUseLimitReached(Forbidden):
+    message_format = _("No remaining uses for trust %(trust_id)s.")
+
+
 class CredentialNotFound(NotFound):
     message_format = _("Could not find credential, %(credential_id)s.")
 
@@ -268,21 +276,47 @@ class RequestTooLarge(Error):
     title = 'Request is too large.'
 
 
-class UnexpectedError(Error):
-    message_format = _("An unexpected error prevented the server"
-                       " from fulfilling your request. %(exception)s")
+class UnexpectedError(SecurityError):
+    """Avoids exposing details of failures, unless in debug mode."""
+    _message_format = _("An unexpected error prevented the server "
+                        "from fulfilling your request.")
+
+    debug_message_format = _("An unexpected error prevented the server "
+                             "from fulfilling your request. %(exception)s")
+
+    @property
+    def message_format(self):
+        """Return the generic message format string unless debug is enabled."""
+        if CONF.debug:
+            return self.debug_message_format
+        return self._message_format
+
+    def _build_message(self, message, **kwargs):
+        if CONF.debug and 'exception' not in kwargs:
+            # Ensure that exception has a value to be extra defensive for
+            # substitutions and make sure the exception doesn't raise an
+            # exception.
+            kwargs['exception'] = ''
+        return super(UnexpectedError, self)._build_message(message, **kwargs)
+
     code = 500
     title = 'Internal Server Error'
 
 
 class CertificateFilesUnavailable(UnexpectedError):
-    message_format = _("Expected signing certificates are not available "
-                       "on the server. Please check Keystone configuration.")
+    debug_message_format = _("Expected signing certificates are not available "
+                             "on the server. Please check Keystone "
+                             "configuration.")
 
 
 class MalformedEndpoint(UnexpectedError):
-    message_format = _("Malformed endpoint URL (%(endpoint)s),"
-                       " see ERROR log for details.")
+    debug_message_format = _("Malformed endpoint URL (%(endpoint)s),"
+                             " see ERROR log for details.")
+
+
+class MappedGroupNotFound(UnexpectedError):
+    debug_message_format = _("Group %(group_id)s returned by mapping "
+                             "%(mapping_id)s was not found in the backend.")
 
 
 class NotImplemented(Error):
@@ -292,6 +326,21 @@ class NotImplemented(Error):
     title = 'Not Implemented'
 
 
+class Gone(Error):
+    message_format = _("The service you have requested is no"
+                       " longer available on this server.")
+    code = 410
+    title = 'Gone'
+
+
 class ConfigFileNotFound(UnexpectedError):
-    message_format = _("The Keystone configuration file %(config_file)s could "
-                       "not be found.")
+    debug_message_format = _("The Keystone configuration file %(config_file)s "
+                             "could not be found.")
+
+
+class MigrationNotProvided(Exception):
+    def __init__(self, mod_name, path):
+        super(MigrationNotProvided, self).__init__(_(
+            "%(mod_name)s doesn't provide database migrations. The migration"
+            " repository path at %(path)s doesn't exist or isn't a directory."
+        ) % {'mod_name': mod_name, 'path': path})
