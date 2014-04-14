@@ -79,6 +79,12 @@ class Manager(manager.Manager):
         tenant.setdefault('description', '')
         tenant.setdefault('parent_project_id', None)
         ret = self.driver.create_project(tenant_id, tenant)
+        parent_project_id = tenant['parent_project_id']
+        roles = self.list_role_assignments()
+        for role in roles:
+            if ('inherited_to_projects' in role) and (role['domain_id'] == tenant['domain_id']):
+                role_parent_project = self.get_role(role['role_id'])
+                self.create_grant(role_id=role['role_id'], user_id=role['user_id'], project_id=tenant_id)
         if SHOULD_CACHE(ret):
             self.get_project.set(ret, self, tenant_id)
             self.get_project_by_name.set(ret, self, ret['name'],
